@@ -1,0 +1,27 @@
+kind = "web"
+previewPath = "/"
+title = "Kutecula"
+version = "1.0.0"
+id = "artifacts/kutecula"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 19717
+
+[services.development]
+run = "pnpm --filter @workspace/kutecula run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/kutecula", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/kutecula/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "19717"
+BASE_PATH = "/"
