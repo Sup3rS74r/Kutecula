@@ -1,12 +1,15 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { LanguageProvider } from '@/context/LanguageContext';
 import { Navigation } from '@/components/Navigation';
 import { Hero } from '@/components/Hero';
 import { Portfolio } from '@/components/Portfolio';
 import { Services } from '@/components/Services';
 import { About } from '@/components/About';
 import { Contact } from '@/components/Contact';
+import { Switch, Route } from 'wouter';
+import AdminPortfolio from '@/pages/AdminPortfolio';
 
 const queryClient = new QueryClient();
 
@@ -27,8 +30,13 @@ function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        <Home />
-        <Toaster />
+        <LanguageProvider>
+          <Switch>
+            <Route path="/admin" component={AdminPortfolio} />
+            <Route component={Home} />
+          </Switch>
+          <Toaster />
+        </LanguageProvider>
       </TooltipProvider>
     </QueryClientProvider>
   );
