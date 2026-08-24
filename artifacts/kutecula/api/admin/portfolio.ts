@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-// Default portfolio items (same as in Portfolio.tsx) — used as fallback
+// Default portfolio items — used as fallback
 const DEFAULT_PORTFOLIO = [
   // Casamentos
   { id: 1,  type: 'image', src: '/portfolio-wedding-1.jpg',     label: { pt: 'Casamentos',  en: 'Weddings'    }, category: 'casamentos' },
@@ -86,40 +86,48 @@ async function savePortfolioToKV(portfolio: unknown) {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method === 'OPTIONS') return res.status(200).end();
+  try {
+    if (req.method === 'OPTIONS') return res.status(200).end();
 
-  // GET — public, no auth required
-  if (req.method === 'GET') {
-    const portfolio = await getPortfolioFromKV();
-    return res.status(200).json({
-      items: portfolio ?? DEFAULT_PORTFOLIO,
-      source: portfolio ? 'kv' : 'default',
-    });
-  }
-
-  // POST (save) — requires admin token
-  if (req.method === 'POST') {
-    const token = req.headers.authorization?.replace('Bearer ', '');
-    if (!verifyAdminToken(token)) {
-      return res.status(401).json({ error: 'Não autorizado. Faça login como admin.' });
-    }
-
-    const { items } = req.body as { items?: unknown[] };
-    if (!items || !Array.isArray(items)) {
-      return res.status(400).json({ error: 'items deve ser um array' });
-    }
-
-    const saved = await savePortfolioToKV(items);
-    if (!saved) {
-      // KV not configured — still return success but warn
+    // GET — public, no auth required
+    if (req.method === 'GET') {
+      const portfolio = await getPortfolioFromKV();
       return res.status(200).json({
-        success: true,
-        warning: 'KV_REST_API_URL/TOKEN não configurados. As alterações não foram persistidas.',
+        items: portfolio ?? DEFAULT_PORTFOLIO,
+        source: portfolio ? 'kv' : 'default',
       });
     }
 
-    return res.status(200).json({ success: true });
-  }
+    // POST (save) — requires admin token
+    if (req.method === 'POST') {
+      const token = req.headers.authorization?.replace('Bearer ', '');
+      if (!verifyAdminToken(token)) {
+        return res.status(401).json({ error: 'Não autorizado. Faça login como admin.' });
+      }
 
-  return res.status(405).json({ error: 'Método não permitido' });
+      let body = req.body;
+      if (typeof body === 'string') {
+        try { body = JSON.parse(body); } catch {}
+      }
+      const { items } = (body || {}) as { items?: unknown[] };
+      if (!items || !Array.isArray(items)) {
+        return res.status(400).json({ error: 'items deve ser um array' });
+      }
+
+      const saved = await savePortfolioToKV(items);
+      if (!saved) {
+        return res.status(200).json({
+          success: true,
+          warning: 'KV_REST_API_URL/TOKEN não configurados. As alterações não foram persistidas.',
+        });
+      }
+
+      return res.status(200).json({ success: true });
+    }
+
+    return res.status(405).json({ error: 'Método não permitido' });
+  } catch (err) {
+    console.error('Unexpected error in admin portfolio API:', err);
+    return res.status(500).json({ error: 'Erro interno no servidor.' });
+  }
 }

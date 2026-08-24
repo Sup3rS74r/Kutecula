@@ -6,39 +6,48 @@ const FROM_EMAIL = 'noreply@kutecula.com';
 const FROM_NAME = 'Kutecula Visuals — Website';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // Handle CORS preflight
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
-
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Método não permitido' });
-  }
-
-  const { name, email, message } = req.body as {
-    name?: string;
-    email?: string;
-    message?: string;
-  };
-
-  // Validation
-  if (!name || !email || !message) {
-    return res.status(400).json({ error: 'Campos obrigatórios em falta: name, email, message' });
-  }
-
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    return res.status(400).json({ error: 'Email inválido' });
-  }
-
-  const apiKey = process.env.RESEND_API_KEY;
-  if (!apiKey) {
-    console.error('RESEND_API_KEY não configurada');
-    return res.status(500).json({ error: 'Configuração de email em falta no servidor' });
-  }
-
-  const resend = new Resend(apiKey);
-
   try {
+    // Handle CORS preflight
+    if (req.method === 'OPTIONS') {
+      return res.status(200).end();
+    }
+
+    if (req.method !== 'POST') {
+      return res.status(405).json({ error: 'Método não permitido' });
+    }
+
+    let body = req.body;
+    if (typeof body === 'string') {
+      try {
+        body = JSON.parse(body);
+      } catch {
+        // ignore parse error
+      }
+    }
+
+    const { name, email, message } = (body || {}) as {
+      name?: string;
+      email?: string;
+      message?: string;
+    };
+
+    // Validation
+    if (!name || !email || !message) {
+      return res.status(400).json({ error: 'Campos obrigatórios em falta: name, email, message' });
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ error: 'Email inválido' });
+    }
+
+    const apiKey = process.env.RESEND_API_KEY;
+    if (!apiKey) {
+      console.error('RESEND_API_KEY não configurada');
+      return res.status(500).json({ error: 'Configuração de email em falta no servidor' });
+    }
+
+    const resend = new Resend(apiKey);
+
     const { error } = await resend.emails.send({
       from: `${FROM_NAME} <${FROM_EMAIL}>`,
       to: RECIPIENTS,
@@ -99,8 +108,8 @@ Pode responder directamente a este email para contactar ${name}.
 
     return res.status(200).json({ success: true, message: 'Mensagem enviada com sucesso!' });
   } catch (err) {
-    console.error('Unexpected error:', err);
-    return res.status(500).json({ error: 'Erro interno. Tente novamente mais tarde.' });
+    console.error('Unexpected error in contact API:', err);
+    return res.status(500).json({ error: 'Erro interno no servidor. Tente novamente mais tarde.' });
   }
 }
 
