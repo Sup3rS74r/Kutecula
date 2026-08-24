@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "pnpm --filter ./artifacts/kutecula run build"
+    "build": "pnpm --filter ./artifacts/kutecula run build && mkdir -p dist && cp -r artifacts/kutecula/dist/* dist/"
   },
   "dependencies": {
     "@vercel/node": "^3.2.27",
