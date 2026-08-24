@@ -1,8 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { Resend } from 'resend';
 
-const resend = new Resend(process.env.RESEND_API_KEY);
-
 const RECIPIENTS = ['clique@kutecula.com', 'marsil@kutecula.com'];
 const FROM_EMAIL = 'noreply@kutecula.com';
 const FROM_NAME = 'Kutecula Visuals — Website';
@@ -32,10 +30,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: 'Email inválido' });
   }
 
-  if (!process.env.RESEND_API_KEY) {
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey) {
     console.error('RESEND_API_KEY não configurada');
     return res.status(500).json({ error: 'Configuração de email em falta no servidor' });
   }
+
+  const resend = new Resend(apiKey);
 
   try {
     const { error } = await resend.emails.send({
