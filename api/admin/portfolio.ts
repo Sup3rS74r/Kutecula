@@ -42,19 +42,40 @@ function verifyAdminToken(token: string | undefined): boolean {
 }
 
 function getKvCredentials() {
-  const url =
+  let url =
     process.env.KV_REST_API_URL ||
     process.env.UPSTASH_REDIS_REST_URL ||
     process.env.VERCEL_KV_REST_API_URL ||
     process.env.REDIS_REST_API_URL ||
     process.env.REST_API_URL;
 
-  const token =
+  let token =
     process.env.KV_REST_API_TOKEN ||
     process.env.UPSTASH_REDIS_REST_TOKEN ||
     process.env.VERCEL_KV_REST_API_TOKEN ||
     process.env.REDIS_REST_API_TOKEN ||
     process.env.REST_API_TOKEN;
+
+  // Fallback: Parse REDIS_URL or KV_URL if REST credentials are not directly set
+  if (!url || !token) {
+    const redisUrlStr = process.env.REDIS_URL || process.env.KV_URL;
+    if (redisUrlStr) {
+      try {
+        // e.g. redis://default:PASSWORD@HOST:PORT or rediss://default:PASSWORD@HOST:PORT
+        const match = redisUrlStr.match(/redis[s]?:\/\/(?:([^:]+):)?([^@]+)@([^:]+)/i);
+        if (match) {
+          const parsedToken = match[2];
+          const parsedHost = match[3];
+          if (parsedHost && parsedToken) {
+            url = `https://${parsedHost}`;
+            token = parsedToken;
+          }
+        }
+      } catch (e) {
+        console.error('Error parsing REDIS_URL/KV_URL:', e);
+      }
+    }
+  }
 
   return { url, token };
 }
