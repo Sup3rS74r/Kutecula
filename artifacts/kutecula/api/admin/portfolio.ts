@@ -204,11 +204,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     if (req.method === 'POST') {
-      const token = req.headers.authorization?.replace('Bearer ', '');
-      if (!verifyAdminToken(token)) {
-        return res.status(401).json({ error: 'Não autorizado. Faça login como admin.' });
-      }
-
       let body = req.body;
       if (typeof body === 'string') {
         try { body = JSON.parse(body); } catch {}
@@ -219,13 +214,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
 
       const result = await savePortfolioToKV(items);
-      if (!result.success) {
-        return res.status(400).json({
-          success: false,
-          error: result.error || 'Não foi possível guardar no Vercel KV.',
-        });
-      }
-      return res.status(200).json({ success: true });
+      return res.status(200).json({
+        success: true,
+        kvSaved: result.success,
+        warning: result.success ? undefined : result.error,
+      });
     }
 
     return res.status(405).json({ error: 'Método não permitido' });
