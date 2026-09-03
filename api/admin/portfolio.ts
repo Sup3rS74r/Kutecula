@@ -95,6 +95,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (req.method === 'OPTIONS') return res.status(200).end();
 
     if (req.method === 'GET') {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
       const portfolio = await getPortfolioFromKV();
       return res.status(200).json({
         items: portfolio ?? DEFAULT_PORTFOLIO,
