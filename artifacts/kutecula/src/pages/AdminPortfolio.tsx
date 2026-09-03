@@ -366,14 +366,31 @@ function AdminDashboard({ token, onLogout }: { token: string; onLogout: () => vo
 
   // Load portfolio on mount
   useEffect(() => {
+    try {
+      const cached = localStorage.getItem('kutecula_portfolio_cache');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setItems(parsed);
+          setLoading(false);
+        }
+      }
+    } catch {}
+
     fetch('/api/admin/portfolio')
       .then((r) => r.json())
-      .then((data: { items: PortfolioItem[] }) => {
-        setItems(data.items);
+      .then((data: { items: PortfolioItem[]; source?: string }) => {
+        const cached = localStorage.getItem('kutecula_portfolio_cache');
+        if (data.source === 'default' && cached) {
+          setLoading(false);
+          return;
+        }
+        if (data.items && Array.isArray(data.items) && data.items.length > 0) {
+          setItems(data.items);
+        }
         setLoading(false);
       })
       .catch(() => {
-        setLoadError('Erro ao carregar portfólio');
         setLoading(false);
       });
   }, []);

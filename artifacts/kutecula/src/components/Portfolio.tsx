@@ -81,8 +81,18 @@ export function Portfolio() {
 
     fetch('/api/admin/portfolio')
       .then((r) => r.json())
-      .then((data: { items: typeof STATIC_PORTFOLIO }) => {
+      .then((data: { items: typeof STATIC_PORTFOLIO; source?: string }) => {
         if (data.items && Array.isArray(data.items) && data.items.length > 0) {
+          // If server returned default fallback, only use it if localStorage is empty
+          const cached = localStorage.getItem('kutecula_portfolio_cache');
+          if (data.source === 'default' && cached) {
+            try {
+              const parsed = JSON.parse(cached);
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                return; // Keep user's custom edits from cache!
+              }
+            } catch {}
+          }
           setPortfolioItems(data.items);
           try {
             localStorage.setItem('kutecula_portfolio_cache', JSON.stringify(data.items));
@@ -96,21 +106,17 @@ export function Portfolio() {
 
   const categoryKeys = Object.keys(categoryMap) as Category[];
 
-  // Build preview subset: up to 2 items from each category in a defined order
-  const previewItems = previewCategoryOrder.flatMap((cat) =>
-    portfolioItems.filter((i) => i.category === cat).slice(0, 2)
-  ).slice(0, 9);
-
+  // Display items: when 'todos', show all items with newest items first!
   const displayedItems =
     activeCategory === 'todos'
-      ? previewItems
-      : portfolioItems.filter((i) => i.category === activeCategory);
+      ? [...portfolioItems].reverse()
+      : [...portfolioItems].filter((i) => i.category === activeCategory).reverse();
 
   const openGallery = (item: GalleryItem & { category: string }, cat: Category) => {
     const catItems =
       cat === 'todos'
-        ? previewItems
-        : portfolioItems.filter((i) => i.category === cat);
+        ? displayedItems
+        : [...portfolioItems].filter((i) => i.category === cat).reverse();
     const idx = catItems.findIndex((i) => i.id === item.id);
     setGalleryItems(catItems);
     setGalleryIndex(idx >= 0 ? idx : 0);

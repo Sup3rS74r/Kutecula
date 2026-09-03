@@ -65,18 +65,13 @@ function getKvCredentials() {
     const redisUrlStr = process.env.REDIS_URL || process.env.KV_URL;
     if (redisUrlStr) {
       try {
-        // e.g. redis://default:PASSWORD@HOST:PORT or rediss://default:PASSWORD@HOST:PORT
-        const match = redisUrlStr.match(/redis[s]?:\/\/(?:([^:]+):)?([^@]+)@([^:]+)/i);
-        if (match) {
-          const parsedToken = match[2];
-          const parsedHost = match[3];
-          if (parsedHost && parsedToken) {
-            url = `https://${parsedHost}`;
-            token = parsedToken;
-          }
+        const parsed = new URL(redisUrlStr);
+        if (parsed.hostname && parsed.password) {
+          url = `https://${parsed.hostname}`;
+          token = parsed.password;
         }
       } catch (e) {
-        console.error('Error parsing REDIS_URL/KV_URL:', e);
+        console.error('Error parsing REDIS_URL/KV_URL with URL parser:', e);
       }
     }
   }
