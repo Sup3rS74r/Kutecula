@@ -51,46 +51,104 @@ async function getPortfolioFromKV() {
   const url = process.env.KV_REST_API_URL;
   const token = process.env.KV_REST_API_TOKEN;
   if (!url || !token) return null;
+
+  const baseUrl = url.replace(/\/$/, '');
+
   try {
-    const res = await fetch(`${url}/get/kutecula_portfolio`, {
+    // 1. Direct GET
+    const res = await fetch(`${baseUrl}/get/kutecula_portfolio`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    if (!res.ok) return null;
-    const data = await res.json() as { result: any };
-    if (!data || data.result === null || data.result === undefined) return null;
-
-    let parsed = typeof data.result === 'string' ? JSON.parse(data.result) : data.result;
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && 'value' in parsed) {
-      parsed = typeof parsed.value === 'string' ? JSON.parse(parsed.value) : parsed.value;
+    if (res.ok) {
+      const data = await res.json() as { result: any };
+      if (data && data.result !== null && data.result !== undefined) {
+        let parsed = typeof data.result === 'string' ? JSON.parse(data.result) : data.result;
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && 'value' in parsed) {
+          parsed = typeof parsed.value === 'string' ? JSON.parse(parsed.value) : parsed.value;
+        }
+        if (typeof parsed === 'string') parsed = JSON.parse(parsed);
+        if (Array.isArray(parsed)) return parsed;
+      }
     }
-    if (typeof parsed === 'string') {
-      parsed = JSON.parse(parsed);
+
+    // 2. Pipeline GET
+    const pipeRes = await fetch(`${baseUrl}/pipeline`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify([['GET', 'kutecula_portfolio']]),
+    });
+    if (pipeRes.ok) {
+      const pipeData = await pipeRes.json() as Array<{ result: any }>;
+      if (Array.isArray(pipeData) && pipeData[0] && pipeData[0].result) {
+        let parsed = typeof pipeData[0].result === 'string' ? JSON.parse(pipeData[0].result) : pipeData[0].result;
+        if (typeof parsed === 'string') parsed = JSON.parse(parsed);
+        if (Array.isArray(parsed)) return parsed;
+      }
     }
 
-    return Array.isArray(parsed) ? parsed : null;
+    return null;
   } catch (err) {
     console.error('Error reading from KV:', err);
     return null;
   }
 }
 
-async function savePortfolioToKV(portfolio: unknown) {
+async function savePortfolioToKV(portfolio: unknown): Promise<{ success: boolean; error?: string }> {
   const url = process.env.KV_REST_API_URL;
   const token = process.env.KV_REST_API_TOKEN;
-  if (!url || !token) return false;
+
+  if (!url || !token) {
+    return {
+      success: false,
+      error: 'As variáveis KV_REST_API_URL / KV_REST_API_TOKEN ainda não estão disponíveis neste deploy. Por favor vá ao painel da Vercel -> Deployments -> clique nos três pontos "..." do último deploy -> escolha "Redeploy".',
+    };
+  }
+
+  const baseUrl = url.replace(/\/$/, '');
+  const payloadString = JSON.stringify(portfolio);
+
   try {
-    const res = await fetch(url, {
+    // 1. Upstash Pipeline endpoint
+    const pipelineRes = await fetch(`${baseUrl}/pipeline`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(['SET', 'kutecula_portfolio', JSON.stringify(portfolio)]),
+      body: JSON.stringify([['SET', 'kutecula_portfolio', payloadString]]),
     });
-    return res.ok;
-  } catch (err) {
-    console.error('Error saving to KV:', err);
-    return false;
+
+    if (pipelineRes.ok) {
+      return { success: true };
+    }
+
+    // 2. Direct SET endpoint
+    const setRes = await fetch(`${baseUrl}/set/kutecula_portfolio`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payloadString),
+    });
+
+    if (setRes.ok) {
+      return { success: true };
+    }
+
+    const errText = await setRes.text();
+    return {
+      success: false,
+      error: `Vercel KV recusou o salvamento (HTTP ${setRes.status}): ${errText || setRes.statusText}`,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: `Exceção de rede ao comunicar com Vercel KV: ${err?.message || String(err)}`,
+    };
   }
 }
 
@@ -122,11 +180,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(400).json({ error: 'items deve ser um array' });
       }
 
-      const saved = await savePortfolioToKV(items);
-      if (!saved) {
+      const result = await savePortfolioToKV(items);
+      if (!result.success) {
         return res.status(400).json({
           success: false,
-          error: 'Vercel KV não configurado ou credenciais inválidas. Verifique KV_REST_API_URL e KV_REST_API_TOKEN no Vercel.',
+          error: result.error || 'Não foi possível guardar no Vercel KV.',
         });
       }
       return res.status(200).json({ success: true });
