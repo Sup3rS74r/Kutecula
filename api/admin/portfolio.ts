@@ -50,10 +50,21 @@ async function getPortfolioFromKV() {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!res.ok) return null;
-    const data = await res.json() as { result: string | null };
-    if (!data.result) return null;
-    return JSON.parse(data.result);
-  } catch {
+    const data = await res.json() as { result: any };
+    if (!data || data.result === null || data.result === undefined) return null;
+
+    let parsed = typeof data.result === 'string' ? JSON.parse(data.result) : data.result;
+    // Unwrap nested { value: ... } if stored by legacy format
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && 'value' in parsed) {
+      parsed = typeof parsed.value === 'string' ? JSON.parse(parsed.value) : parsed.value;
+    }
+    if (typeof parsed === 'string') {
+      parsed = JSON.parse(parsed);
+    }
+
+    return Array.isArray(parsed) ? parsed : null;
+  } catch (err) {
+    console.error('Error reading from KV:', err);
     return null;
   }
 }
@@ -63,16 +74,18 @@ async function savePortfolioToKV(portfolio: unknown) {
   const token = process.env.KV_REST_API_TOKEN;
   if (!url || !token) return false;
   try {
-    const res = await fetch(`${url}/set/kutecula_portfolio`, {
+    // Official Upstash REST API command array endpoint
+    const res = await fetch(url, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ value: JSON.stringify(portfolio) }),
+      body: JSON.stringify(['SET', 'kutecula_portfolio', JSON.stringify(portfolio)]),
     });
     return res.ok;
-  } catch {
+  } catch (err) {
+    console.error('Error saving to KV:', err);
     return false;
   }
 }
@@ -106,9 +119,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const saved = await savePortfolioToKV(items);
       if (!saved) {
-        return res.status(200).json({
-          success: true,
-          warning: 'KV não configurado. As alterações não foram persistidas.',
+        return res.status(400).json({
+          success: false,
+          error: 'Vercel KV não configurado ou credenciais inválidas. Verifique KV_REST_API_URL e KV_REST_API_TOKEN no Vercel.',
         });
       }
       return res.status(200).json({ success: true });

@@ -359,7 +359,10 @@ function AdminDashboard({ token, onLogout }: { token: string; onLogout: () => vo
   const [items, setItems] = useState<PortfolioItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [saveErrorMessage, setSaveErrorMessage] = useState('');
   const [loadError, setLoadError] = useState('');
+  const [showCodeModal, setShowCodeModal] = useState(false);
+  const [copiedCode, setCopiedCode] = useState(false);
 
   // Load portfolio on mount
   useEffect(() => {
@@ -378,11 +381,13 @@ function AdminDashboard({ token, onLogout }: { token: string; onLogout: () => vo
   const handleUpdate = (id: number, updated: PortfolioItem) => {
     setItems((prev) => prev.map((i) => (i.id === id ? updated : i)));
     setSaveStatus('idle');
+    setSaveErrorMessage('');
   };
 
   const handleDelete = (id: number) => {
     setItems((prev) => prev.filter((i) => i.id !== id));
     setSaveStatus('idle');
+    setSaveErrorMessage('');
   };
 
   const handleAdd = (category: Category, type: ItemType) => {
@@ -395,10 +400,12 @@ function AdminDashboard({ token, onLogout }: { token: string; onLogout: () => vo
     };
     setItems((prev) => [...prev, newItem]);
     setSaveStatus('idle');
+    setSaveErrorMessage('');
   };
 
   const handleSave = async () => {
     setSaveStatus('saving');
+    setSaveErrorMessage('');
     try {
       const res = await fetch('/api/admin/portfolio', {
         method: 'POST',
@@ -408,12 +415,15 @@ function AdminDashboard({ token, onLogout }: { token: string; onLogout: () => vo
         },
         body: JSON.stringify({ items }),
       });
-      const data = await res.json() as { success?: boolean; error?: string; warning?: string };
-      if (!res.ok) throw new Error(data.error ?? 'Erro ao guardar');
+      const data = await res.json() as { success?: boolean; error?: string };
+      if (!res.ok || !data.success) {
+        throw new Error(data.error ?? 'Erro ao guardar no Vercel KV');
+      }
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus('idle'), 3000);
-    } catch {
+    } catch (err: any) {
       setSaveStatus('error');
+      setSaveErrorMessage(err?.message || 'Erro ao guardar no servidor');
     }
   };
 
@@ -421,6 +431,14 @@ function AdminDashboard({ token, onLogout }: { token: string; onLogout: () => vo
     acc[cat] = items.filter((i) => i.category === cat);
     return acc;
   }, {} as Record<Category, PortfolioItem[]>);
+
+  const formattedCodeSnippet = `const STATIC_PORTFOLIO = ${JSON.stringify(items, null, 2)};`;
+
+  const copySnippet = () => {
+    navigator.clipboard.writeText(formattedCodeSnippet);
+    setCopiedCode(true);
+    setTimeout(() => setCopiedCode(false), 2000);
+  };
 
   return (
     <div className="min-h-screen bg-[#0d0d0d]">
@@ -433,6 +451,13 @@ function AdminDashboard({ token, onLogout }: { token: string; onLogout: () => vo
           </div>
 
           <div className="flex items-center gap-3">
+            <button
+              onClick={() => setShowCodeModal(true)}
+              className="text-[#aaa] hover:text-white text-xs border border-white/10 px-3 py-1.5 rounded-sm transition-colors"
+            >
+              Exportar p/ Código
+            </button>
+
             <a
               href="/"
               className="text-[#555] hover:text-white text-sm transition-colors"
@@ -457,7 +482,7 @@ function AdminDashboard({ token, onLogout }: { token: string; onLogout: () => vo
               {saveStatus === 'saved' && <CheckCircle size={15} />}
               {saveStatus === 'error' && <AlertCircle size={15} />}
               {saveStatus === 'idle' && <Save size={15} />}
-              {saveStatus === 'saving' ? 'A guardar...' : saveStatus === 'saved' ? 'Guardado!' : saveStatus === 'error' ? 'Erro' : 'Guardar'}
+              {saveStatus === 'saving' ? 'A guardar...' : saveStatus === 'saved' ? 'Guardado!' : saveStatus === 'error' ? 'Erro' : 'Guardar no KV'}
             </button>
 
             <button
@@ -473,13 +498,27 @@ function AdminDashboard({ token, onLogout }: { token: string; onLogout: () => vo
 
       {/* Content */}
       <div className="max-w-4xl mx-auto px-6 py-10">
+        {/* Save Error Alert */}
+        {saveStatus === 'error' && saveErrorMessage && (
+          <div className="bg-red-500/10 border border-red-500/30 rounded-sm p-4 mb-6 text-sm text-red-300 flex items-start gap-3">
+            <AlertCircle size={18} className="text-red-400 flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="font-semibold text-red-200 mb-0.5">Erro ao Guardar na Base de Dados</p>
+              <p>{saveErrorMessage}</p>
+              <p className="text-xs text-red-400/80 mt-2">
+                Dica: Clica no botão <strong className="text-white">Exportar p/ Código</strong> no topo para copiar o código gerado e colar diretamente no ficheiro do projeto!
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Info banner */}
         <div className="bg-[#7B2D8E]/10 border border-[#7B2D8E]/20 rounded-sm p-4 mb-8 text-sm text-[#ccc]">
           <p className="font-medium text-white mb-1">Como funciona</p>
           <ul className="space-y-1 text-[#888]">
             <li>• Para <strong className="text-white">imagens</strong>: usa um URL público (Google Drive, Imgur, Cloudinary, etc.)</li>
             <li>• Para <strong className="text-white">vídeos do YouTube</strong>: usa apenas o ID do vídeo (ex: <span className="text-[#7B2D8E]">dQw4w9WgXcQ</span>)</li>
-            <li>• Depois de alterar, clica em <strong className="text-white">Guardar</strong> para que as mudanças fiquem visíveis no site.</li>
+            <li>• Clica em <strong className="text-white">Guardar no KV</strong> para publicar no Vercel KV, ou <strong className="text-white">Exportar p/ Código</strong> para copiar a lista para o código-fonte.</li>
           </ul>
         </div>
 
@@ -506,6 +545,45 @@ function AdminDashboard({ token, onLogout }: { token: string; onLogout: () => vo
             ))}
           </div>
         )}
+
+        {/* Export Code Modal */}
+        <AnimatePresence>
+          {showCodeModal && (
+            <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                className="bg-[#1a1a1a] border border-white/10 rounded-sm p-6 max-w-2xl w-full max-h-[85vh] flex flex-col"
+              >
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-white font-bold text-lg">Código Atualizado do Portfólio</h3>
+                  <button
+                    onClick={() => setShowCodeModal(false)}
+                    className="text-[#888] hover:text-white text-sm"
+                  >
+                    ✕ Fechar
+                  </button>
+                </div>
+                <p className="text-[#aaa] text-xs mb-3">
+                  Podes copiar este array de código e colar diretamente no ficheiro <code className="text-[#7B2D8E]">src/components/Portfolio.tsx</code> para atualizar as fotos permanentemente no código-fonte!
+                </p>
+                <pre className="bg-[#111] p-4 rounded-sm border border-white/5 text-green-400 text-xs overflow-auto flex-1 font-mono mb-4">
+                  {formattedCodeSnippet}
+                </pre>
+                <div className="flex justify-end gap-3">
+                  <button
+                    onClick={copySnippet}
+                    className="px-5 py-2 bg-[#7B2D8E] hover:bg-[#8f3aa3] text-white text-sm font-medium rounded-sm transition-colors flex items-center gap-2"
+                  >
+                    {copiedCode ? <CheckCircle size={15} /> : null}
+                    {copiedCode ? 'Copiado para a área de transferência!' : 'Copiar Código'}
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
       </div>
     </div>
   );
