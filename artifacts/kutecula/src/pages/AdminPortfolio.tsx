@@ -451,16 +451,9 @@ function AdminDashboard({ token, onLogout }: { token: string; onLogout: () => vo
           </div>
 
           <div className="flex items-center gap-3">
-            <button
-              onClick={() => setShowCodeModal(true)}
-              className="text-[#aaa] hover:text-white text-xs border border-white/10 px-3 py-1.5 rounded-sm transition-colors"
-            >
-              Exportar p/ Código
-            </button>
-
             <a
               href="/"
-              className="text-[#555] hover:text-white text-sm transition-colors"
+              className="text-[#888] hover:text-white text-sm transition-colors flex items-center gap-1"
               target="_blank"
             >
               Ver site →
@@ -470,19 +463,19 @@ function AdminDashboard({ token, onLogout }: { token: string; onLogout: () => vo
             <button
               onClick={handleSave}
               disabled={saveStatus === 'saving' || saveStatus === 'saved'}
-              className={`flex items-center gap-2 px-5 py-2 rounded-sm text-sm font-medium transition-all ${
+              className={`flex items-center gap-2 px-6 py-2.5 rounded-sm text-sm font-semibold transition-all ${
                 saveStatus === 'saved'
-                  ? 'bg-green-600/20 text-green-400 border border-green-600/30'
+                  ? 'bg-green-600 text-white border border-green-500 shadow-lg shadow-green-900/30'
                   : saveStatus === 'error'
-                  ? 'bg-red-500/20 text-red-400 border border-red-500/30'
-                  : 'bg-[#7B2D8E] text-white hover:bg-[#8f3aa3]'
+                  ? 'bg-red-600 text-white border border-red-500'
+                  : 'bg-[#7B2D8E] text-white hover:bg-[#8f3aa3] shadow-lg shadow-[#7B2D8E]/30'
               } disabled:cursor-not-allowed`}
             >
-              {saveStatus === 'saving' && <Loader2 size={15} className="animate-spin" />}
-              {saveStatus === 'saved' && <CheckCircle size={15} />}
-              {saveStatus === 'error' && <AlertCircle size={15} />}
-              {saveStatus === 'idle' && <Save size={15} />}
-              {saveStatus === 'saving' ? 'A guardar...' : saveStatus === 'saved' ? 'Guardado!' : saveStatus === 'error' ? 'Erro' : 'Guardar no KV'}
+              {saveStatus === 'saving' && <Loader2 size={16} className="animate-spin" />}
+              {saveStatus === 'saved' && <CheckCircle size={16} />}
+              {saveStatus === 'error' && <AlertCircle size={16} />}
+              {saveStatus === 'idle' && <Save size={16} />}
+              {saveStatus === 'saving' ? 'A guardar...' : saveStatus === 'saved' ? 'Publicado no Site!' : saveStatus === 'error' ? 'Erro ao Publicar' : 'Guardar no Site'}
             </button>
 
             <button
@@ -503,10 +496,10 @@ function AdminDashboard({ token, onLogout }: { token: string; onLogout: () => vo
           <div className="bg-red-500/10 border border-red-500/30 rounded-sm p-4 mb-6 text-sm text-red-300 flex items-start gap-3">
             <AlertCircle size={18} className="text-red-400 flex-shrink-0 mt-0.5" />
             <div>
-              <p className="font-semibold text-red-200 mb-0.5">Erro ao Guardar na Base de Dados</p>
-              <p>{saveErrorMessage}</p>
+              <p className="font-semibold text-red-200 mb-0.5">Base de dados não conectada na Vercel</p>
+              <p className="text-xs text-red-300/90 mt-1">{saveErrorMessage}</p>
               <p className="text-xs text-red-400/80 mt-2">
-                Dica: Clica no botão <strong className="text-white">Exportar p/ Código</strong> no topo para copiar o código gerado e colar diretamente no ficheiro do projeto!
+                Para ativar o salvamento automático sem programar: aceda à Vercel → projeto Kutecula → Storage → Crie a base de dados gratuita <strong>KV (Redis)</strong>.
               </p>
             </div>
           </div>
@@ -514,11 +507,11 @@ function AdminDashboard({ token, onLogout }: { token: string; onLogout: () => vo
 
         {/* Info banner */}
         <div className="bg-[#7B2D8E]/10 border border-[#7B2D8E]/20 rounded-sm p-4 mb-8 text-sm text-[#ccc]">
-          <p className="font-medium text-white mb-1">Como funciona</p>
+          <p className="font-medium text-white mb-1">Como gerir o Portfólio (Simples e Rápido)</p>
           <ul className="space-y-1 text-[#888]">
-            <li>• Para <strong className="text-white">imagens</strong>: usa um URL público (Google Drive, Imgur, Cloudinary, etc.)</li>
-            <li>• Para <strong className="text-white">vídeos do YouTube</strong>: usa apenas o ID do vídeo (ex: <span className="text-[#7B2D8E]">dQw4w9WgXcQ</span>)</li>
-            <li>• Clica em <strong className="text-white">Guardar no KV</strong> para publicar no Vercel KV, ou <strong className="text-white">Exportar p/ Código</strong> para copiar a lista para o código-fonte.</li>
+            <li>1. Para <strong className="text-white">imagens</strong>: insira o link da imagem (ex: Google Drive, Cloudinary, Imgur, etc.).</li>
+            <li>2. Para <strong className="text-white">vídeos do YouTube</strong>: insira apenas o ID do vídeo (ex: <span className="text-[#7B2D8E]">dQw4w9WgXcQ</span>).</li>
+            <li>3. Clique em <strong className="text-white">Guardar no Site</strong> no canto superior direito. O site é atualizado instantaneamente!</li>
           </ul>
         </div>
 
