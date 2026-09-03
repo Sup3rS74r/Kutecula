@@ -67,17 +67,30 @@ export function Portfolio() {
   const ref = useRef(null);
   const isInView = useInView(ref, { once: true, margin: '-100px' });
 
-  // Load portfolio from API (with fallback to static)
+  // Load portfolio from API (with fallback to local storage & static)
   useEffect(() => {
+    try {
+      const cached = localStorage.getItem('kutecula_portfolio_cache');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setPortfolioItems(parsed);
+        }
+      }
+    } catch {}
+
     fetch('/api/admin/portfolio')
       .then((r) => r.json())
       .then((data: { items: typeof STATIC_PORTFOLIO }) => {
-        if (data.items && data.items.length > 0) {
+        if (data.items && Array.isArray(data.items) && data.items.length > 0) {
           setPortfolioItems(data.items);
+          try {
+            localStorage.setItem('kutecula_portfolio_cache', JSON.stringify(data.items));
+          } catch {}
         }
       })
       .catch(() => {
-        // Silently fall back to static data
+        // Silently fall back to static or cached data
       });
   }, []);
 

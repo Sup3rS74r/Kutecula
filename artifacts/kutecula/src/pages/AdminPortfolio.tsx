@@ -406,6 +406,12 @@ function AdminDashboard({ token, onLogout }: { token: string; onLogout: () => vo
   const handleSave = async () => {
     setSaveStatus('saving');
     setSaveErrorMessage('');
+
+    // Save to browser localStorage cache immediately
+    try {
+      localStorage.setItem('kutecula_portfolio_cache', JSON.stringify(items));
+    } catch {}
+
     try {
       const res = await fetch('/api/admin/portfolio', {
         method: 'POST',
@@ -417,13 +423,13 @@ function AdminDashboard({ token, onLogout }: { token: string; onLogout: () => vo
       });
       const data = await res.json() as { success?: boolean; error?: string };
       if (!res.ok || !data.success) {
-        throw new Error(data.error ?? 'Erro ao guardar no Vercel KV');
+        throw new Error(data.error ?? `Erro do servidor (HTTP ${res.status})`);
       }
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus('idle'), 3000);
     } catch (err: any) {
       setSaveStatus('error');
-      setSaveErrorMessage(err?.message || 'Erro ao guardar no servidor');
+      setSaveErrorMessage(err?.message || 'Erro ao comunicar com o servidor');
     }
   };
 

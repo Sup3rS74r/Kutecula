@@ -47,9 +47,26 @@ function verifyAdminToken(token: string | undefined): boolean {
   }
 }
 
+function getKvCredentials() {
+  const url =
+    process.env.KV_REST_API_URL ||
+    process.env.UPSTASH_REDIS_REST_URL ||
+    process.env.VERCEL_KV_REST_API_URL ||
+    process.env.REDIS_REST_API_URL ||
+    process.env.REST_API_URL;
+
+  const token =
+    process.env.KV_REST_API_TOKEN ||
+    process.env.UPSTASH_REDIS_REST_TOKEN ||
+    process.env.VERCEL_KV_REST_API_TOKEN ||
+    process.env.REDIS_REST_API_TOKEN ||
+    process.env.REST_API_TOKEN;
+
+  return { url, token };
+}
+
 async function getPortfolioFromKV() {
-  const url = process.env.KV_REST_API_URL;
-  const token = process.env.KV_REST_API_TOKEN;
+  const { url, token } = getKvCredentials();
   if (!url || !token) return null;
 
   const baseUrl = url.replace(/\/$/, '');
@@ -97,13 +114,15 @@ async function getPortfolioFromKV() {
 }
 
 async function savePortfolioToKV(portfolio: unknown): Promise<{ success: boolean; error?: string }> {
-  const url = process.env.KV_REST_API_URL;
-  const token = process.env.KV_REST_API_TOKEN;
+  const { url, token } = getKvCredentials();
 
   if (!url || !token) {
+    const envKeys = Object.keys(process.env).filter(
+      (k) => !k.includes('PASS') && !k.includes('SECRET') && !k.includes('KEY') && !k.includes('TOKEN')
+    );
     return {
       success: false,
-      error: 'As variáveis KV_REST_API_URL / KV_REST_API_TOKEN ainda não estão disponíveis neste deploy. Por favor vá ao painel da Vercel -> Deployments -> clique nos três pontos "..." do último deploy -> escolha "Redeploy".',
+      error: `Variáveis do Vercel KV não detetadas no servidor (Variáveis presentes: [${envKeys.join(', ')}]). Na Vercel, aceda a "Deployments", clique nos "..." do deploy mais recente e faça "Redeploy" para carregar o KV.`,
     };
   }
 
@@ -147,7 +166,7 @@ async function savePortfolioToKV(portfolio: unknown): Promise<{ success: boolean
   } catch (err: any) {
     return {
       success: false,
-      error: `Exceção de rede ao comunicar com Vercel KV: ${err?.message || String(err)}`,
+      error: `Erro ao comunicar com Vercel KV: ${err?.message || String(err)}`,
     };
   }
 }
