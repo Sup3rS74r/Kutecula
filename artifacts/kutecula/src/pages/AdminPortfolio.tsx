@@ -421,9 +421,17 @@ function AdminDashboard({ token, onLogout }: { token: string; onLogout: () => vo
         },
         body: JSON.stringify({ items }),
       });
-      const data = await res.json() as { success?: boolean; error?: string };
+
+      let data: { success?: boolean; error?: string } = {};
+      const resText = await res.text();
+      try {
+        data = JSON.parse(resText);
+      } catch {
+        throw new Error(`Servidor respondeu com erro (HTTP ${res.status}): ${resText.slice(0, 100)}`);
+      }
+
       if (!res.ok || !data.success) {
-        throw new Error(data.error ?? `Erro do servidor (HTTP ${res.status})`);
+        throw new Error(data.error ?? `Erro HTTP ${res.status}`);
       }
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus('idle'), 3000);
