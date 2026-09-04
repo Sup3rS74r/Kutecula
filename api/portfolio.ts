@@ -33,7 +33,7 @@ const DEFAULT_PORTFOLIO = [
   { id: 26, type: 'video', videoId: 'dQw4w9WgXcQ',              label: { pt: 'Audiovisual', en: 'Audiovisual' }, category: 'audiovisual' },
 ];
 
-// ─── Token verification ────────────────────────────────────────────────────────
+// ─── Token verification ─────────────────────────────────────────────────────
 function verifyAdminToken(token: string | undefined): boolean {
   if (!token) return false;
   try {
@@ -44,7 +44,7 @@ function verifyAdminToken(token: string | undefined): boolean {
   }
 }
 
-// ─── Parse REDIS_URL ───────────────────────────────────────────────────────────
+// ─── Parse REDIS_URL ────────────────────────────────────────────────────────
 interface RedisConfig {
   host: string;
   port: number;
@@ -58,15 +58,13 @@ function parseRedisUrl(): RedisConfig | null {
     process.env.KV_URL ||
     process.env.STORAGE_URL ||
     process.env.UPSTASH_REDIS_URL;
-
   if (!urlStr) return null;
-
   try {
-    const parsed = new URL(urlStr);
+    const u = new URL(urlStr);
     return {
-      host: parsed.hostname,
-      port: parseInt(parsed.port || '6379', 10),
-      password: decodeURIComponent(parsed.password),
+      host: u.hostname,
+      port: parseInt(u.port || '6379', 10),
+      password: decodeURIComponent(u.password),
       tls: urlStr.startsWith('rediss://'),
     };
   } catch {
@@ -74,104 +72,123 @@ function parseRedisUrl(): RedisConfig | null {
   }
 }
 
-// ─── Minimal Redis client over raw TCP/TLS ─────────────────────────────────────
-// Implements just enough of RESP protocol to do AUTH, GET, SET
+// ─── Robust RESP protocol parser ────────────────────────────────────────────
+// Handles streaming TCP data correctly (data may arrive in multiple chunks)
 function redisCommand(config: RedisConfig, ...args: string[]): Promise<string | null> {
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      sock.destroy();
-      reject(new Error('Redis command timed out after 8s'));
-    }, 8000);
+    let done = false;
+    const finish = (val: string | null | Error) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try { sock.destroy(); } catch {}
+      if (val instanceof Error) reject(val);
+      else resolve(val);
+    };
 
-    // RESP protocol encoding
-    const encode = (...parts: string[]) => {
-      let cmd = `*${parts.length}\r\n`;
-      for (const p of parts) cmd += `$${Buffer.byteLength(p, 'utf8')}\r\n${p}\r\n`;
-      return cmd;
+    const timer = setTimeout(() => finish(new Error('Redis TCP timeout after 8s')), 8000);
+
+    // RESP encode command
+    const encode = (...parts: string[]): Buffer => {
+      let s = `*${parts.length}\r\n`;
+      for (const p of parts) s += `$${Buffer.byteLength(p, 'utf8')}\r\n${p}\r\n`;
+      return Buffer.from(s, 'utf8');
     };
 
     let sock: Socket | TLSSocket;
-    let buffer = '';
-    const cmds: string[] = [];
+    let buf = Buffer.alloc(0);
 
-    // Always AUTH first if password exists, then the actual command
-    if (config.password) cmds.push(encode('AUTH', 'default', config.password));
-    cmds.push(encode(...args));
+    // Track how many responses we expect (AUTH counts as one)
+    const hasAuth = Boolean(config.password);
+    let responsesDone = 0;
+    const totalResponses = hasAuth ? 2 : 1;
 
-    const onConnect = () => {
-      for (const cmd of cmds) sock.write(cmd);
+    // Streaming RESP state machine
+    const tryParse = () => {
+      let pos = 0;
+      while (!done && pos < buf.length) {
+        const crlfIdx = buf.indexOf('\r\n', pos);
+        if (crlfIdx === -1) return; // Need more data
+
+        const typeChar = String.fromCharCode(buf[pos]);
+        const lineStr = buf.slice(pos + 1, crlfIdx).toString('utf8');
+
+        if (typeChar === '+') {
+          // Simple string: +OK
+          pos = crlfIdx + 2;
+          responsesDone++;
+          if (responsesDone >= totalResponses) {
+            finish('OK');
+          }
+          // else: AUTH OK, continue
+        } else if (typeChar === '-') {
+          // Error: -ERR message
+          finish(new Error(lineStr));
+          return;
+        } else if (typeChar === ':') {
+          // Integer: :1
+          pos = crlfIdx + 2;
+          responsesDone++;
+          if (responsesDone >= totalResponses) finish(lineStr);
+        } else if (typeChar === '$') {
+          const bulkLen = parseInt(lineStr, 10);
+          if (bulkLen === -1) {
+            // Null bulk string
+            pos = crlfIdx + 2;
+            responsesDone++;
+            if (responsesDone >= totalResponses) finish(null);
+          } else {
+            // Bulk string: $N\r\n<N bytes>\r\n
+            const dataStart = crlfIdx + 2;
+            const dataEnd = dataStart + bulkLen;
+            if (buf.length < dataEnd + 2) return; // Wait for full data
+            const value = buf.slice(dataStart, dataEnd).toString('utf8');
+            pos = dataEnd + 2; // skip trailing \r\n
+            responsesDone++;
+            if (responsesDone >= totalResponses) {
+              finish(value);
+            }
+          }
+        } else {
+          // Unknown type (e.g. '*' array), skip line
+          pos = crlfIdx + 2;
+        }
+      }
+      // Update buffer to unconsumed bytes
+      if (pos > 0) buf = buf.slice(pos);
     };
 
-    const onData = (data: Buffer) => {
-      buffer += data.toString('utf8');
-      const lines = buffer.split('\r\n');
-
-      // Find the last complete response
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        if (!line) continue;
-
-        if (line.startsWith('-')) { // Error
-          clearTimeout(timeout);
-          sock.destroy();
-          reject(new Error(line.slice(1)));
-          return;
-        }
-
-        if (line.startsWith('+OK') && cmds.length > 1 && i === 0) {
-          // AUTH OK, wait for the real response
-          continue;
-        }
-
-        if (line === '+OK' || line === ':1' || line === ':0') {
-          // SET OK or other simple OK
-          clearTimeout(timeout);
-          sock.destroy();
-          resolve('OK');
-          return;
-        }
-
-        if (line.startsWith('$')) {
-          const len = parseInt(line.slice(1), 10);
-          if (len === -1) {
-            clearTimeout(timeout);
-            sock.destroy();
-            resolve(null);
-            return;
-          }
-          // Next line is the bulk string value
-          if (i + 1 < lines.length) {
-            clearTimeout(timeout);
-            sock.destroy();
-            resolve(lines[i + 1]);
-            return;
-          }
-        }
+    const onConnect = () => {
+      try {
+        if (hasAuth) sock.write(encode('AUTH', 'default', config.password));
+        sock.write(encode(...args));
+      } catch (e: any) {
+        finish(new Error(`Write failed: ${e?.message}`));
       }
     };
 
-    const onError = (err: Error) => {
-      clearTimeout(timeout);
-      reject(err);
+    const onData = (chunk: Buffer) => {
+      buf = Buffer.concat([buf, chunk]);
+      tryParse();
     };
 
     if (config.tls) {
-      sock = tlsConnect({ host: config.host, port: config.port, rejectUnauthorized: false }, onConnect);
+      sock = tlsConnect(
+        { host: config.host, port: config.port, rejectUnauthorized: false },
+        onConnect,
+      );
     } else {
       sock = createConnection({ host: config.host, port: config.port }, onConnect);
     }
 
     sock.on('data', onData);
-    sock.on('error', onError);
-    sock.setTimeout(8000, () => {
-      sock.destroy();
-      clearTimeout(timeout);
-      reject(new Error('Redis connection timed out'));
-    });
+    sock.on('error', (e) => finish(e));
+    sock.on('timeout', () => finish(new Error('Redis TCP connection timed out')));
+    sock.setTimeout(8000);
   });
 }
 
-// ─── Upstash REST API fallback ─────────────────────────────────────────────────
+// ─── Upstash REST API (fallback if REST credentials exist) ──────────────────
 function getUpstashRest(): { url: string; token: string } | null {
   const url =
     process.env.KV_REST_API_URL ||
@@ -179,16 +196,13 @@ function getUpstashRest(): { url: string; token: string } | null {
     process.env.UPSTASH_REDIS_REST_URL ||
     process.env.VERCEL_KV_REST_API_URL ||
     process.env.REDIS_REST_API_URL;
-
   const token =
     process.env.KV_REST_API_TOKEN ||
     process.env.STORAGE_REST_API_TOKEN ||
     process.env.UPSTASH_REDIS_REST_TOKEN ||
     process.env.VERCEL_KV_REST_API_TOKEN ||
     process.env.REDIS_REST_API_TOKEN;
-
   if (url && token) return { url, token };
-
   for (const key of Object.keys(process.env)) {
     if (key.endsWith('_REST_API_URL')) {
       const prefix = key.slice(0, -'_REST_API_URL'.length);
@@ -199,9 +213,9 @@ function getUpstashRest(): { url: string; token: string } | null {
   return null;
 }
 
-// ─── Get portfolio ─────────────────────────────────────────────────────────────
+// ─── Get portfolio ──────────────────────────────────────────────────────────
 async function getPortfolio(): Promise<any[] | null> {
-  // 1. Upstash REST
+  // 1. Upstash HTTP REST (fast, if available)
   const rest = getUpstashRest();
   if (rest) {
     try {
@@ -215,13 +229,12 @@ async function getPortfolio(): Promise<any[] | null> {
           if (Array.isArray(p)) return p;
         }
       }
-    } catch {}
+    } catch { /* fall through to TCP */ }
   }
 
-  // 2. TCP
+  // 2. TCP (robust streaming parser)
   const cfg = parseRedisUrl();
   if (!cfg) return null;
-
   try {
     const raw = await redisCommand(cfg, 'GET', REDIS_KEY);
     if (raw) {
@@ -235,7 +248,7 @@ async function getPortfolio(): Promise<any[] | null> {
   }
 }
 
-// ─── Save portfolio ────────────────────────────────────────────────────────────
+// ─── Save portfolio ─────────────────────────────────────────────────────────
 async function savePortfolio(portfolio: unknown): Promise<{ success: boolean; error?: string }> {
   const payload = JSON.stringify(portfolio);
 
@@ -249,7 +262,7 @@ async function savePortfolio(portfolio: unknown): Promise<{ success: boolean; er
         body: JSON.stringify([['SET', REDIS_KEY, payload]]),
       });
       if (r.ok) return { success: true };
-    } catch {}
+    } catch { /* fall through to TCP */ }
   }
 
   // 2. TCP
@@ -260,7 +273,6 @@ async function savePortfolio(portfolio: unknown): Promise<{ success: boolean; er
       error: 'REDIS_URL não encontrada nas variáveis de ambiente da Vercel.',
     };
   }
-
   try {
     await redisCommand(cfg, 'SET', REDIS_KEY, payload);
     return { success: true };
@@ -272,7 +284,7 @@ async function savePortfolio(portfolio: unknown): Promise<{ success: boolean; er
   }
 }
 
-// ─── Sanitize ──────────────────────────────────────────────────────────────────
+// ─── Sanitize portfolio items ───────────────────────────────────────────────
 function sanitizeItems(items: any[]): any[] {
   return items.map((it: any) => {
     if (!it || typeof it !== 'object') return it;
@@ -288,7 +300,7 @@ function sanitizeItems(items: any[]): any[] {
   });
 }
 
-// ─── Handler ───────────────────────────────────────────────────────────────────
+// ─── Handler ────────────────────────────────────────────────────────────────
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     if (req.method === 'OPTIONS') {
@@ -313,17 +325,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (!verifyAdminToken(token)) {
         return res.status(401).json({ success: false, error: 'Não autorizado.' });
       }
-
       let body = req.body;
       if (typeof body === 'string') { try { body = JSON.parse(body); } catch {} }
       const { items } = (body || {}) as { items?: any[] };
       if (!items || !Array.isArray(items)) {
         return res.status(400).json({ success: false, error: 'O campo items deve ser um array.' });
       }
-
       const sanitized = sanitizeItems(items);
       const result = await savePortfolio(sanitized);
-
       if (!result.success) return res.status(503).json({ success: false, error: result.error });
       return res.status(200).json({ success: true, message: 'Portfólio gravado no Redis!', count: sanitized.length });
     }
