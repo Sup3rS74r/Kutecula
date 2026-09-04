@@ -532,6 +532,25 @@ function AdminDashboard({ token, onLogout }: { token: string; onLogout: () => vo
     }
   };
 
+  const [diagnosing, setDiagnosing] = useState(false);
+  const [diagResult, setDiagResult] = useState<string | null>(null);
+
+  const handleDiagnose = async () => {
+    setDiagnosing(true);
+    setDiagResult(null);
+    try {
+      const res = await fetch('/api/admin/debug', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      setDiagResult(JSON.stringify(data, null, 2));
+    } catch (err: any) {
+      setDiagResult(`Erro: ${err?.message || String(err)}`);
+    } finally {
+      setDiagnosing(false);
+    }
+  };
+
   const itemsByCategory = CATEGORIES.reduce<Record<Category, PortfolioItem[]>>((acc, cat) => {
     acc[cat] = items.filter((i) => i.category === cat);
     return acc;
@@ -628,6 +647,14 @@ function AdminDashboard({ token, onLogout }: { token: string; onLogout: () => vo
                   Conectar KV / Redis na Vercel (Storage → Create Database) →
                 </a>
                 <button
+                  onClick={handleDiagnose}
+                  disabled={diagnosing}
+                  className="px-3 py-1.5 bg-yellow-500/20 text-yellow-300 border border-yellow-500/40 font-medium text-xs rounded-sm hover:bg-yellow-500/30 transition-colors flex items-center gap-1.5"
+                >
+                  {diagnosing ? <Loader2 size={12} className="animate-spin" /> : <AlertTriangle size={12} />}
+                  Diagnosticar Ligação Redis
+                </button>
+                <button
                   onClick={() => setShowCodeModal(true)}
                   className="px-3 py-1.5 bg-white/10 text-white font-medium text-xs rounded-sm hover:bg-white/20 transition-colors flex items-center gap-1.5"
                 >
@@ -635,6 +662,11 @@ function AdminDashboard({ token, onLogout }: { token: string; onLogout: () => vo
                   Copiar Código Atualizado para o Projeto
                 </button>
               </div>
+              {diagResult && (
+                <div className="mt-3 p-3 bg-black/40 rounded border border-yellow-500/20 overflow-auto max-h-48">
+                  <pre className="text-yellow-200 text-[10px] font-mono whitespace-pre-wrap break-all">{diagResult}</pre>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -725,13 +757,18 @@ export default function AdminPortfolio() {
     () => sessionStorage.getItem('kutecula_admin_token')
   );
 
+  const handleLogin = (t: string) => {
+    sessionStorage.setItem('kutecula_admin_token', t);
+    setToken(t);
+  };
+
   const handleLogout = () => {
     sessionStorage.removeItem('kutecula_admin_token');
     setToken(null);
   };
 
   if (!token) {
-    return <LoginScreen onLogin={setToken} />;
+    return <LoginScreen onLogin={handleLogin} />;
   }
 
   return <AdminDashboard token={token} onLogout={handleLogout} />;

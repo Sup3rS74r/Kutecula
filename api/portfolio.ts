@@ -63,7 +63,7 @@ function getRedisCredentials() {
     process.env.REDIS_REST_API_TOKEN ||
     process.env.REST_API_TOKEN;
 
-  // 2. Dynamic discovery: Any variable ending with _REST_API_URL
+  // 2. Dynamic discovery: Any variable ending with _REST_API_URL (paired with _REST_API_TOKEN)
   if (!url || !token) {
     for (const key of Object.keys(process.env)) {
       if (key.endsWith('_REST_API_URL')) {
@@ -72,13 +72,30 @@ function getRedisCredentials() {
         if (process.env[key] && process.env[candidateTokenKey]) {
           url = process.env[key];
           token = process.env[candidateTokenKey];
+          console.log(`[Redis] Found credentials via dynamic discovery: ${key} / ${candidateTokenKey}`);
           break;
         }
       }
     }
   }
 
-  // 3. Fallback: Parse redis:// or rediss:// connection string (REDIS_URL, KV_URL, STORAGE_URL, etc.)
+  // 3. Dynamic discovery: Any variable ending with _URL paired with _TOKEN (broader search)
+  if (!url || !token) {
+    for (const key of Object.keys(process.env)) {
+      if (key.endsWith('_URL') && (key.includes('REDIS') || key.includes('KV') || key.includes('UPSTASH') || key.includes('STORAGE'))) {
+        const prefix = key.slice(0, -'_URL'.length);
+        const candidateTokenKey = `${prefix}_TOKEN`;
+        if (process.env[key] && process.env[candidateTokenKey]) {
+          url = process.env[key];
+          token = process.env[candidateTokenKey];
+          console.log(`[Redis] Found credentials via broad discovery: ${key} / ${candidateTokenKey}`);
+          break;
+        }
+      }
+    }
+  }
+
+  // 4. Fallback: Parse redis:// or rediss:// connection string (REDIS_URL, KV_URL, STORAGE_URL, etc.)
   if (!url || !token) {
     const redisUrlStr =
       process.env.REDIS_URL ||
@@ -90,12 +107,18 @@ function getRedisCredentials() {
         const parsed = new URL(redisUrlStr);
         if (parsed.hostname && parsed.password) {
           url = `https://${parsed.hostname}`;
-          token = parsed.password;
+          token = decodeURIComponent(parsed.password);
+          console.log(`[Redis] Parsed credentials from connection string URL`);
         }
       } catch (e) {
         console.error('Error parsing REDIS_URL/KV_URL:', e);
       }
     }
+  }
+
+  if (!url || !token) {
+    const allKeys = Object.keys(process.env).filter(k => !k.includes('PASS') && !k.includes('SECRET'));
+    console.warn('[Redis] No credentials found. Available env keys:', allKeys.join(', '));
   }
 
   return { url, token };
@@ -202,10 +225,13 @@ async function savePortfolioToRedis(portfolio: unknown): Promise<{ success: bool
       return { success: true };
     }
 
-    const errText = await cmdRes.text();
+    // All methods failed — read the error from cmdRes
+    let errText = '';
+    try { errText = await cmdRes.text(); } catch {}
+    const { url: dbgUrl } = getRedisCredentials();
     return {
       success: false,
-      error: `Redis recusou a gravação (HTTP ${cmdRes.status}): ${errText || cmdRes.statusText}`,
+      error: `Redis recusou a gravação (HTTP ${cmdRes.status}): ${errText || cmdRes.statusText}. URL usada: ${dbgUrl ? dbgUrl.slice(0, 50) + '...' : 'N/A'}`,
     };
   } catch (err: any) {
     return {

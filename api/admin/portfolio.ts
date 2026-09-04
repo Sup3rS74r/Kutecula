@@ -57,7 +57,7 @@ function getKvCredentials() {
     process.env.REDIS_REST_API_TOKEN ||
     process.env.REST_API_TOKEN;
 
-  // 2. Dynamic discovery: Any variable ending with _REST_API_URL
+  // 2. Dynamic discovery: Any variable ending with _REST_API_URL (paired with _REST_API_TOKEN)
   if (!url || !token) {
     for (const key of Object.keys(process.env)) {
       if (key.endsWith('_REST_API_URL')) {
@@ -72,7 +72,22 @@ function getKvCredentials() {
     }
   }
 
-  // 3. Fallback: Parse redis:// or rediss:// connection string (REDIS_URL, KV_URL, STORAGE_URL, etc.)
+  // 3. Dynamic discovery: Any variable ending with _URL paired with _TOKEN (broader search)
+  if (!url || !token) {
+    for (const key of Object.keys(process.env)) {
+      if (key.endsWith('_URL') && (key.includes('REDIS') || key.includes('KV') || key.includes('UPSTASH') || key.includes('STORAGE'))) {
+        const prefix = key.slice(0, -'_URL'.length);
+        const candidateTokenKey = `${prefix}_TOKEN`;
+        if (process.env[key] && process.env[candidateTokenKey]) {
+          url = process.env[key];
+          token = process.env[candidateTokenKey];
+          break;
+        }
+      }
+    }
+  }
+
+  // 4. Fallback: Parse redis:// or rediss:// connection string (REDIS_URL, KV_URL, STORAGE_URL, etc.)
   if (!url || !token) {
     const redisUrlStr =
       process.env.REDIS_URL ||
@@ -84,7 +99,7 @@ function getKvCredentials() {
         const parsed = new URL(redisUrlStr);
         if (parsed.hostname && parsed.password) {
           url = `https://${parsed.hostname}`;
-          token = parsed.password;
+          token = decodeURIComponent(parsed.password);
         }
       } catch (e) {
         console.error('Error parsing REDIS_URL/KV_URL with URL parser:', e);
