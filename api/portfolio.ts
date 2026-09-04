@@ -1,4 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import Redis from 'ioredis';
 
 // Default portfolio items — used only when Redis is empty or newly created
 const DEFAULT_PORTFOLIO = [
@@ -35,6 +36,9 @@ const DEFAULT_PORTFOLIO = [
   { id: 26, type: 'video', videoId: 'dQw4w9WgXcQ',              label: { pt: 'Audiovisual', en: 'Audiovisual' }, category: 'audiovisual' },
 ];
 
+const REDIS_KEY = 'kutecula_portfolio';
+
+// ─── Token verification ────────────────────────────────────────────────────────
 function verifyAdminToken(token: string | undefined): boolean {
   if (!token) return false;
   try {
@@ -45,202 +49,179 @@ function verifyAdminToken(token: string | undefined): boolean {
   }
 }
 
-function getRedisCredentials() {
-  // 1. Standard known prefixes (KV, STORAGE, REDIS, UPSTASH)
-  let url =
+// ─── Get Redis URL ─────────────────────────────────────────────────────────────
+function getRedisUrl(): string | null {
+  return (
+    process.env.REDIS_URL ||
+    process.env.KV_URL ||
+    process.env.STORAGE_URL ||
+    process.env.UPSTASH_REDIS_URL ||
+    null
+  );
+}
+
+// ─── Create ioredis client ─────────────────────────────────────────────────────
+function createRedisClient(): Redis | null {
+  const url = getRedisUrl();
+  if (!url) return null;
+  try {
+    const client = new Redis(url, {
+      maxRetriesPerRequest: 2,
+      connectTimeout: 8000,
+      commandTimeout: 6000,
+      enableReadyCheck: false,
+      lazyConnect: true,
+      tls: url.startsWith('rediss://') ? {} : undefined,
+    });
+    return client;
+  } catch (err) {
+    console.error('[Redis] Failed to create client:', err);
+    return null;
+  }
+}
+
+// ─── Try Upstash HTTP REST API (if credentials available) ─────────────────────
+function getUpstashRestCredentials(): { url: string; token: string } | null {
+  const url =
     process.env.KV_REST_API_URL ||
     process.env.STORAGE_REST_API_URL ||
     process.env.UPSTASH_REDIS_REST_URL ||
     process.env.VERCEL_KV_REST_API_URL ||
-    process.env.REDIS_REST_API_URL ||
-    process.env.REST_API_URL;
+    process.env.REDIS_REST_API_URL;
 
-  let token =
+  const token =
     process.env.KV_REST_API_TOKEN ||
     process.env.STORAGE_REST_API_TOKEN ||
     process.env.UPSTASH_REDIS_REST_TOKEN ||
     process.env.VERCEL_KV_REST_API_TOKEN ||
-    process.env.REDIS_REST_API_TOKEN ||
-    process.env.REST_API_TOKEN;
+    process.env.REDIS_REST_API_TOKEN;
 
-  // 2. Dynamic discovery: Any variable ending with _REST_API_URL (paired with _REST_API_TOKEN)
-  if (!url || !token) {
-    for (const key of Object.keys(process.env)) {
-      if (key.endsWith('_REST_API_URL')) {
-        const prefix = key.slice(0, -'_REST_API_URL'.length);
-        const candidateTokenKey = `${prefix}_REST_API_TOKEN`;
-        if (process.env[key] && process.env[candidateTokenKey]) {
-          url = process.env[key];
-          token = process.env[candidateTokenKey];
-          console.log(`[Redis] Found credentials via dynamic discovery: ${key} / ${candidateTokenKey}`);
-          break;
-        }
+  if (url && token) return { url, token };
+
+  // Dynamic discovery: _REST_API_URL + _REST_API_TOKEN
+  for (const key of Object.keys(process.env)) {
+    if (key.endsWith('_REST_API_URL')) {
+      const prefix = key.slice(0, -'_REST_API_URL'.length);
+      const tokenKey = `${prefix}_REST_API_TOKEN`;
+      if (process.env[key] && process.env[tokenKey]) {
+        return { url: process.env[key]!, token: process.env[tokenKey]! };
       }
     }
   }
 
-  // 3. Dynamic discovery: Any variable ending with _URL paired with _TOKEN (broader search)
-  if (!url || !token) {
-    for (const key of Object.keys(process.env)) {
-      if (key.endsWith('_URL') && (key.includes('REDIS') || key.includes('KV') || key.includes('UPSTASH') || key.includes('STORAGE'))) {
-        const prefix = key.slice(0, -'_URL'.length);
-        const candidateTokenKey = `${prefix}_TOKEN`;
-        if (process.env[key] && process.env[candidateTokenKey]) {
-          url = process.env[key];
-          token = process.env[candidateTokenKey];
-          console.log(`[Redis] Found credentials via broad discovery: ${key} / ${candidateTokenKey}`);
-          break;
-        }
-      }
-    }
-  }
-
-  // 4. Fallback: Parse redis:// or rediss:// connection string (REDIS_URL, KV_URL, STORAGE_URL, etc.)
-  if (!url || !token) {
-    const redisUrlStr =
-      process.env.REDIS_URL ||
-      process.env.KV_URL ||
-      process.env.STORAGE_URL ||
-      process.env.UPSTASH_REDIS_URL;
-    if (redisUrlStr) {
-      try {
-        const parsed = new URL(redisUrlStr);
-        if (parsed.hostname && parsed.password) {
-          url = `https://${parsed.hostname}`;
-          token = decodeURIComponent(parsed.password);
-          console.log(`[Redis] Parsed credentials from connection string URL`);
-        }
-      } catch (e) {
-        console.error('Error parsing REDIS_URL/KV_URL:', e);
-      }
-    }
-  }
-
-  if (!url || !token) {
-    const allKeys = Object.keys(process.env).filter(k => !k.includes('PASS') && !k.includes('SECRET'));
-    console.warn('[Redis] No credentials found. Available env keys:', allKeys.join(', '));
-  }
-
-  return { url, token };
+  return null;
 }
 
+// ─── Read from Redis ───────────────────────────────────────────────────────────
 async function getPortfolioFromRedis(): Promise<any[] | null> {
-  const { url, token } = getRedisCredentials();
-  if (!url || !token) return null;
+  // 1. Try Upstash HTTP REST API
+  const rest = getUpstashRestCredentials();
+  if (rest) {
+    try {
+      const baseUrl = rest.url.replace(/\/$/, '');
+      const res = await fetch(`${baseUrl}/get/${REDIS_KEY}`, {
+        headers: { Authorization: `Bearer ${rest.token}` },
+      });
+      if (res.ok) {
+        const data = await res.json() as { result: any };
+        if (data?.result != null) {
+          let parsed = typeof data.result === 'string' ? JSON.parse(data.result) : data.result;
+          if (Array.isArray(parsed)) return parsed;
+        }
+      }
+    } catch (err) {
+      console.warn('[Redis GET] REST API failed, trying TCP:', err);
+    }
+  }
 
-  const baseUrl = url.replace(/\/$/, '');
+  // 2. Try ioredis TCP connection
+  const client = createRedisClient();
+  if (!client) return null;
 
   try {
-    // 1. Direct GET
-    const res = await fetch(`${baseUrl}/get/kutecula_portfolio`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (res.ok) {
-      const data = await res.json() as { result: any };
-      if (data && data.result !== null && data.result !== undefined) {
-        let parsed = typeof data.result === 'string' ? JSON.parse(data.result) : data.result;
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && 'value' in parsed) {
-          parsed = typeof parsed.value === 'string' ? JSON.parse(parsed.value) : parsed.value;
-        }
-        if (typeof parsed === 'string') parsed = JSON.parse(parsed);
-        if (Array.isArray(parsed)) return parsed;
-      }
+    await client.connect();
+    const raw = await client.get(REDIS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
     }
-
-    // 2. Upstash Command endpoint
-    const cmdRes = await fetch(`${baseUrl}`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(['GET', 'kutecula_portfolio']),
-    });
-    if (cmdRes.ok) {
-      const cmdData = await cmdRes.json() as { result: any };
-      if (cmdData && cmdData.result !== null && cmdData.result !== undefined) {
-        let parsed = typeof cmdData.result === 'string' ? JSON.parse(cmdData.result) : cmdData.result;
-        if (typeof parsed === 'string') parsed = JSON.parse(parsed);
-        if (Array.isArray(parsed)) return parsed;
-      }
-    }
-
     return null;
   } catch (err) {
-    console.error('Error reading from Redis:', err);
+    console.error('[Redis GET] TCP failed:', err);
     return null;
+  } finally {
+    try { client.disconnect(); } catch {}
   }
 }
 
+// ─── Write to Redis ────────────────────────────────────────────────────────────
 async function savePortfolioToRedis(portfolio: unknown): Promise<{ success: boolean; error?: string }> {
-  const { url, token } = getRedisCredentials();
+  const payloadStr = JSON.stringify(portfolio);
 
-  if (!url || !token) {
+  // 1. Try Upstash HTTP REST API
+  const rest = getUpstashRestCredentials();
+  if (rest) {
+    try {
+      const baseUrl = rest.url.replace(/\/$/, '');
+      const res = await fetch(`${baseUrl}/pipeline`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${rest.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify([['SET', REDIS_KEY, payloadStr]]),
+      });
+      if (res.ok) return { success: true };
+    } catch (err) {
+      console.warn('[Redis SET] REST API failed, trying TCP:', err);
+    }
+  }
+
+  // 2. Try ioredis TCP connection
+  const redisUrl = getRedisUrl();
+  if (!redisUrl) {
     return {
       success: false,
-      error: 'Variáveis de conexão ao Redis (KV_REST_API_URL / KV_REST_API_TOKEN ou UPSTASH_REDIS_REST_URL) não encontradas no servidor Vercel. Crie a base de dados no painel da Vercel (Storage → KV / Redis).',
+      error: 'Variável REDIS_URL não encontrada. Adicione a ligação Redis no painel da Vercel (Settings → Environment Variables).',
     };
   }
 
-  const baseUrl = url.replace(/\/$/, '');
-  const payloadString = JSON.stringify(portfolio);
+  const client = createRedisClient();
+  if (!client) {
+    return { success: false, error: 'Não foi possível criar o cliente Redis a partir da REDIS_URL.' };
+  }
 
   try {
-    // 1. Upstash Command endpoint: POST ["SET", "kutecula_portfolio", payload]
-    const cmdRes = await fetch(`${baseUrl}`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(['SET', 'kutecula_portfolio', payloadString]),
-    });
-    if (cmdRes.ok) {
-      return { success: true };
-    }
-
-    // 2. Upstash Pipeline endpoint
-    const pipelineRes = await fetch(`${baseUrl}/pipeline`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify([['SET', 'kutecula_portfolio', payloadString]]),
-    });
-    if (pipelineRes.ok) {
-      return { success: true };
-    }
-
-    // 3. Direct SET endpoint
-    const setRes = await fetch(`${baseUrl}/set/kutecula_portfolio`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payloadString),
-    });
-    if (setRes.ok) {
-      return { success: true };
-    }
-
-    // All methods failed — read the error from cmdRes
-    let errText = '';
-    try { errText = await cmdRes.text(); } catch {}
-    const { url: dbgUrl } = getRedisCredentials();
-    return {
-      success: false,
-      error: `Redis recusou a gravação (HTTP ${cmdRes.status}): ${errText || cmdRes.statusText}. URL usada: ${dbgUrl ? dbgUrl.slice(0, 50) + '...' : 'N/A'}`,
-    };
+    await client.connect();
+    await client.set(REDIS_KEY, payloadStr);
+    return { success: true };
   } catch (err: any) {
+    console.error('[Redis SET] TCP failed:', err);
     return {
       success: false,
-      error: `Erro ao comunicar com Redis: ${err?.message || String(err)}`,
+      error: `Erro na ligação TCP ao Redis: ${err?.message || String(err)}`,
     };
+  } finally {
+    try { client.disconnect(); } catch {}
   }
 }
 
+// ─── Sanitize portfolio items ──────────────────────────────────────────────────
+function sanitizeItems(items: any[]): any[] {
+  return items.map((it: any) => {
+    if (!it || typeof it !== 'object') return it;
+    const copy = { ...it };
+    if (copy.type === 'image' && typeof copy.src === 'string') {
+      const driveMatch = copy.src.match(/(?:drive\.google\.com\/(?:file\/d\/|open\?id=|uc\?(?:export=view&)?id=)|lh3\.googleusercontent\.com\/d\/)([\w-]+)/i);
+      if (driveMatch?.[1]) {
+        copy.src = `https://lh3.googleusercontent.com/d/${driveMatch[1]}`;
+      }
+    } else if (copy.type === 'video' && typeof copy.videoId === 'string') {
+      const match = copy.videoId.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?(?:.*&)?v=|shorts\/))([\w-]{11})/i);
+      if (match?.[1]) copy.videoId = match[1];
+    }
+    return copy;
+  });
+}
+
+// ─── Handler ───────────────────────────────────────────────────────────────────
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     if (req.method === 'OPTIONS') {
@@ -250,7 +231,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(200).end();
     }
 
-    // GET /api/portfolio — Chamado pelo Site público e pelo Admin para ler do Redis
+    // GET /api/portfolio — Read from Redis (public endpoint)
     if (req.method === 'GET') {
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
       const portfolio = await getPortfolioFromRedis();
@@ -260,7 +241,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    // POST /api/portfolio — Chamado pelo Admin para gravar no Redis
+    // POST /api/portfolio — Write to Redis (admin only)
     if (req.method === 'POST') {
       const authHeader = req.headers.authorization || '';
       const token = authHeader.replace(/^Bearer\s+/i, '').trim();
@@ -277,31 +258,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(400).json({ success: false, error: 'O campo items deve ser um array.' });
       }
 
-      // Sanitize Google Drive links e YouTube links antes de gravar no Redis
-      const sanitized = items.map((it: any) => {
-        if (!it || typeof it !== 'object') return it;
-        const copy = { ...it };
-        if (copy.type === 'image' && typeof copy.src === 'string') {
-          const driveMatch = copy.src.match(/(?:drive\.google\.com\/(?:file\/d\/|open\?id=|uc\?(?:export=view&)?id=)|lh3\.googleusercontent\.com\/d\/)([\w-]+)/i);
-          if (driveMatch && driveMatch[1]) {
-            copy.src = `https://lh3.googleusercontent.com/d/${driveMatch[1]}`;
-          }
-        } else if (copy.type === 'video' && typeof copy.videoId === 'string') {
-          const match = copy.videoId.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?(?:.*&)?v=|shorts\/))([\w-]{11})/i);
-          if (match && match[1]) {
-            copy.videoId = match[1];
-          }
-        }
-        return copy;
-      });
-
+      const sanitized = sanitizeItems(items);
       const result = await savePortfolioToRedis(sanitized);
 
       if (!result.success) {
-        return res.status(503).json({
-          success: false,
-          error: result.error,
-        });
+        return res.status(503).json({ success: false, error: result.error });
       }
 
       return res.status(200).json({
