@@ -40,8 +40,10 @@ function verifyAdminToken(token: string | undefined): boolean {
 }
 
 function getKvCredentials() {
+  // 1. Standard known prefixes (KV, STORAGE, REDIS, UPSTASH)
   let url =
     process.env.KV_REST_API_URL ||
+    process.env.STORAGE_REST_API_URL ||
     process.env.UPSTASH_REDIS_REST_URL ||
     process.env.VERCEL_KV_REST_API_URL ||
     process.env.REDIS_REST_API_URL ||
@@ -49,14 +51,34 @@ function getKvCredentials() {
 
   let token =
     process.env.KV_REST_API_TOKEN ||
+    process.env.STORAGE_REST_API_TOKEN ||
     process.env.UPSTASH_REDIS_REST_TOKEN ||
     process.env.VERCEL_KV_REST_API_TOKEN ||
     process.env.REDIS_REST_API_TOKEN ||
     process.env.REST_API_TOKEN;
 
-  // Fallback: Parse REDIS_URL or KV_URL if REST credentials are not directly set
+  // 2. Dynamic discovery: Any variable ending with _REST_API_URL
   if (!url || !token) {
-    const redisUrlStr = process.env.REDIS_URL || process.env.KV_URL;
+    for (const key of Object.keys(process.env)) {
+      if (key.endsWith('_REST_API_URL')) {
+        const prefix = key.slice(0, -'_REST_API_URL'.length);
+        const candidateTokenKey = `${prefix}_REST_API_TOKEN`;
+        if (process.env[key] && process.env[candidateTokenKey]) {
+          url = process.env[key];
+          token = process.env[candidateTokenKey];
+          break;
+        }
+      }
+    }
+  }
+
+  // 3. Fallback: Parse redis:// or rediss:// connection string (REDIS_URL, KV_URL, STORAGE_URL, etc.)
+  if (!url || !token) {
+    const redisUrlStr =
+      process.env.REDIS_URL ||
+      process.env.KV_URL ||
+      process.env.STORAGE_URL ||
+      process.env.UPSTASH_REDIS_URL;
     if (redisUrlStr) {
       try {
         const parsed = new URL(redisUrlStr);
@@ -193,20 +215,52 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     if (req.method === 'POST') {
+      const authHeader = req.headers.authorization || '';
+      const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+      if (!verifyAdminToken(token)) {
+        return res.status(401).json({ success: false, error: 'Não autorizado. Token de administrador inválido.' });
+      }
+
       let body = req.body;
       if (typeof body === 'string') {
         try { body = JSON.parse(body); } catch {}
       }
-      const { items } = (body || {}) as { items?: unknown[] };
+      const { items } = (body || {}) as { items?: any[] };
       if (!items || !Array.isArray(items)) {
         return res.status(400).json({ error: 'items deve ser um array' });
       }
 
-      const result = await savePortfolioToKV(items);
+      // Sanitize items: clean Google Drive links and YouTube video IDs
+      const sanitized = items.map((it: any) => {
+        if (!it || typeof it !== 'object') return it;
+        const copy = { ...it };
+        if (copy.type === 'image' && typeof copy.src === 'string') {
+          const driveMatch = copy.src.match(/(?:drive\.google\.com\/(?:file\/d\/|open\?id=|uc\?(?:export=view&)?id=)|lh3\.googleusercontent\.com\/d\/)([\w-]+)/i);
+          if (driveMatch && driveMatch[1]) {
+            copy.src = `https://lh3.googleusercontent.com/d/${driveMatch[1]}`;
+          }
+        } else if (copy.type === 'video' && typeof copy.videoId === 'string') {
+          const match = copy.videoId.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?(?:.*&)?v=|shorts\/))([\w-]{11})/i);
+          if (match && match[1]) {
+            copy.videoId = match[1];
+          }
+        }
+        return copy;
+      });
+
+      const result = await savePortfolioToKV(sanitized);
+
+      if (!result.success) {
+        return res.status(503).json({
+          success: false,
+          error: result.error,
+        });
+      }
+
       return res.status(200).json({
         success: true,
-        kvSaved: result.success,
-        warning: result.success ? undefined : result.error,
+        message: 'Portfólio gravado com sucesso no Redis!',
+        count: sanitized.length,
       });
     }
 

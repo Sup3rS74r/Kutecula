@@ -1,7 +1,8 @@
-import { useEffect, useCallback } from 'react';
+import { useEffect, useCallback, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, ChevronLeft, ChevronRight, Play } from 'lucide-react';
 import { useLang } from '@/context/LanguageContext';
+import { extractYouTubeId, normalizeImageUrl, getYouTubeThumbnail } from '@/lib/utils';
 
 export type GalleryItem = {
   id: number;
@@ -28,6 +29,12 @@ export function GalleryModal({
 }: GalleryModalProps) {
   const { lang, t } = useLang();
   const item = items[currentIndex];
+  const [imageError, setImageError] = useState(false);
+
+  // Reset error when current item changes
+  useEffect(() => {
+    setImageError(false);
+  }, [currentIndex]);
 
   const handleKey = useCallback(
     (e: KeyboardEvent) => {
@@ -48,6 +55,13 @@ export function GalleryModal({
   }, [handleKey]);
 
   if (!item) return null;
+
+  const rawSrc = item.src ? normalizeImageUrl(item.src) : '';
+  // Fallback URL if primary CDN link fails
+  const driveIdMatch = item.src?.match(/(?:drive\.google\.com\/(?:file\/d\/|open\?id=|uc\?(?:export=view&)?id=)|lh3\.googleusercontent\.com\/d\/)([\w-]+)/i);
+  const fallbackSrc = driveIdMatch ? `https://drive.google.com/thumbnail?id=${driveIdMatch[1]}&sz=w1920` : rawSrc;
+  const currentImgSrc = imageError ? fallbackSrc : rawSrc;
+  const cleanVideoId = extractYouTubeId(item.videoId);
 
   return (
     <motion.div
@@ -93,15 +107,20 @@ export function GalleryModal({
           >
             {item.type === 'image' ? (
               <img
-                src={item.src}
+                src={currentImgSrc}
                 alt={item.label[lang]}
+                onError={() => {
+                  if (!imageError && fallbackSrc !== currentImgSrc) {
+                    setImageError(true);
+                  }
+                }}
                 className="max-h-[80vh] max-w-full object-contain rounded-sm shadow-2xl"
                 draggable={false}
               />
             ) : (
               <div className="w-full aspect-video max-h-[80vh]">
                 <iframe
-                  src={`https://www.youtube.com/embed/${item.videoId}?autoplay=1&rel=0&modestbranding=1`}
+                  src={`https://www.youtube.com/embed/${cleanVideoId}?autoplay=1&rel=0&modestbranding=1`}
                   title={item.label[lang]}
                   allow="autoplay; fullscreen; encrypted-media"
                   allowFullScreen
@@ -153,13 +172,20 @@ export function GalleryModal({
           >
             {thumb.type === 'image' ? (
               <img
-                src={thumb.src}
+                src={normalizeImageUrl(thumb.src)}
                 alt=""
                 className="w-full h-full object-cover"
               />
             ) : (
-              <div className="w-full h-full bg-[#1a1a1a] flex items-center justify-center">
-                <Play size={10} className="text-white/70" />
+              <div className="w-full h-full bg-[#1a1a1a] relative flex items-center justify-center overflow-hidden">
+                {getYouTubeThumbnail(thumb.videoId) && (
+                  <img
+                    src={getYouTubeThumbnail(thumb.videoId)}
+                    alt=""
+                    className="absolute inset-0 w-full h-full object-cover opacity-60"
+                  />
+                )}
+                <Play size={10} className="text-white/90 relative z-10" />
               </div>
             )}
           </button>

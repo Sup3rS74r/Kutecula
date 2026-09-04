@@ -3,8 +3,9 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Lock, LogOut, Plus, Trash2, Save, Eye, EyeOff,
   Image as ImageIcon, Play, Loader2, AlertCircle, CheckCircle,
-  ChevronDown, ChevronUp, GripVertical,
+  ChevronDown, ChevronUp, GripVertical, ArrowUp, ArrowDown, Code2, AlertTriangle
 } from 'lucide-react';
+import { extractYouTubeId, normalizeImageUrl, getYouTubeThumbnail } from '@/lib/utils';
 
 // ─────────────────────────────────────────────────────────────
 // Types
@@ -34,10 +35,6 @@ const CATEGORIES = Object.keys(CATEGORY_LABELS) as Category[];
 // ─────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────
-function getVideoThumb(videoId: string) {
-  return `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`;
-}
-
 function nextId(items: PortfolioItem[]) {
   return items.length > 0 ? Math.max(...items.map((i) => i.id)) + 1 : 1;
 }
@@ -59,31 +56,27 @@ function LoginScreen({ onLogin }: { onLogin: (token: string) => void }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password }),
       });
-      const data = await res.json() as { token?: string; error?: string };
-      if (!res.ok || !data.token) throw new Error(data.error ?? 'Password incorrecta');
-      sessionStorage.setItem('kutecula_admin_token', data.token);
-      onLogin(data.token);
+      const data = await res.json();
+      if (res.ok && data.token) {
+        onLogin(data.token);
+      } else {
+        setStatus('error');
+      }
     } catch {
       setStatus('error');
     }
   };
 
   return (
-    <div className="min-h-screen bg-[#0d0d0d] flex items-center justify-center p-6">
+    <div className="min-h-screen bg-[#0d0d0d] flex items-center justify-center px-4">
       <motion.div
-        initial={{ opacity: 0, y: 30 }}
+        initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         className="w-full max-w-sm"
       >
-        {/* Logo */}
-        <div className="text-center mb-10">
-          <h1 className="text-2xl font-bold text-white tracking-[0.2em]">KUTECULA</h1>
-          <p className="text-[#7B2D8E] text-xs tracking-[0.4em] uppercase mt-1">Admin · Portfólio</p>
-        </div>
-
-        <div className="bg-[#1a1a1a] border border-white/[0.07] rounded-sm p-8">
-          <div className="flex items-center gap-3 mb-6">
-            <div className="w-10 h-10 rounded-sm bg-[#7B2D8E]/15 flex items-center justify-center">
+        <div className="bg-[#141414] border border-white/[0.07] rounded-sm p-8 shadow-2xl">
+          <div className="flex items-center gap-3 mb-8">
+            <div className="w-10 h-10 rounded-sm bg-[#7B2D8E]/20 flex items-center justify-center">
               <Lock size={18} className="text-[#7B2D8E]" />
             </div>
             <div>
@@ -151,22 +144,51 @@ function ItemCard({
   item,
   onUpdate,
   onDelete,
+  onMoveUp,
+  onMoveDown,
+  isFirst,
+  isLast,
 }: {
   item: PortfolioItem;
   onUpdate: (updated: PortfolioItem) => void;
   onDelete: () => void;
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
+  isFirst?: boolean;
+  isLast?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const thumb = item.type === 'image' ? item.src : getVideoThumb(item.videoId ?? '');
+  const cleanVideoId = extractYouTubeId(item.videoId);
+  const normalizedImgSrc = normalizeImageUrl(item.src);
+  const thumb = item.type === 'image' ? normalizedImgSrc : (cleanVideoId ? getYouTubeThumbnail(cleanVideoId) : '');
+  const isDriveLink = Boolean(item.src && /(?:drive\.google\.com|lh3\.googleusercontent\.com)/i.test(item.src));
 
   return (
-    <div className="bg-[#1a1a1a] border border-white/[0.07] rounded-sm overflow-hidden">
+    <div className="bg-[#1a1a1a] border border-white/[0.07] rounded-sm overflow-hidden transition-colors hover:border-white/[0.12]">
       {/* Header row */}
       <div className="flex items-center gap-3 p-3">
-        <GripVertical size={16} className="text-[#444] flex-shrink-0 cursor-grab" />
+        {/* Reordering buttons */}
+        <div className="flex flex-col gap-0.5 flex-shrink-0">
+          <button
+            onClick={onMoveUp}
+            disabled={isFirst}
+            title="Subir posição"
+            className="p-1 text-[#555] hover:text-white disabled:opacity-20 disabled:hover:text-[#555] transition-colors"
+          >
+            <ArrowUp size={13} />
+          </button>
+          <button
+            onClick={onMoveDown}
+            disabled={isLast}
+            title="Descer posição"
+            className="p-1 text-[#555] hover:text-white disabled:opacity-20 disabled:hover:text-[#555] transition-colors"
+          >
+            <ArrowDown size={13} />
+          </button>
+        </div>
 
         {/* Thumbnail */}
-        <div className="w-14 h-10 rounded-sm bg-[#111] flex-shrink-0 overflow-hidden relative">
+        <div className="w-14 h-10 rounded-sm bg-[#111] flex-shrink-0 overflow-hidden relative border border-white/5">
           {thumb ? (
             <img src={thumb} alt="" className="w-full h-full object-cover" />
           ) : (
@@ -187,10 +209,19 @@ function ItemCard({
 
         {/* Info */}
         <div className="flex-1 min-w-0">
-          <p className="text-white text-sm truncate">
-            {item.type === 'image' ? (item.src ?? 'Sem imagem') : `YouTube: ${item.videoId ?? 'Sem ID'}`}
+          <p className="text-white text-sm truncate font-medium">
+            {item.type === 'image'
+              ? (item.src ? (isDriveLink ? 'Imagem Google Drive' : item.src) : 'Sem link de imagem')
+              : (cleanVideoId ? `YouTube ID: ${cleanVideoId}` : 'Sem vídeo')}
           </p>
-          <p className="text-[#555] text-xs">{item.type === 'image' ? 'Imagem' : 'Vídeo YouTube'}</p>
+          <div className="flex items-center gap-2">
+            <p className="text-[#666] text-xs">{item.type === 'image' ? 'Imagem' : 'Vídeo YouTube'}</p>
+            {isDriveLink && (
+              <span className="text-[10px] bg-emerald-950/60 text-emerald-400 px-1.5 py-0.2 rounded border border-emerald-800/40">
+                Google Drive
+              </span>
+            )}
+          </div>
         </div>
 
         {/* Actions */}
@@ -198,12 +229,14 @@ function ItemCard({
           <button
             onClick={() => setExpanded(!expanded)}
             className="p-2 text-[#666] hover:text-white transition-colors rounded-sm hover:bg-white/5"
+            title={expanded ? 'Recolher' : 'Editar'}
           >
             {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
           </button>
           <button
             onClick={onDelete}
             className="p-2 text-[#666] hover:text-red-400 transition-colors rounded-sm hover:bg-red-400/10"
+            title="Remover"
           >
             <Trash2 size={16} />
           </button>
@@ -220,7 +253,7 @@ function ItemCard({
             transition={{ duration: 0.2 }}
             className="overflow-hidden"
           >
-            <div className="px-4 pb-4 pt-2 border-t border-white/[0.05] space-y-3">
+            <div className="px-4 pb-4 pt-2 border-t border-white/[0.05] space-y-3 bg-[#161616]">
               {/* Type selector */}
               <div>
                 <label className="block text-[#666] text-xs uppercase tracking-widest mb-2">Tipo</label>
@@ -231,7 +264,7 @@ function ItemCard({
                       onClick={() => onUpdate({ ...item, type: t, src: t === 'video' ? undefined : item.src, videoId: t === 'image' ? undefined : item.videoId })}
                       className={`flex items-center gap-2 px-4 py-2 text-sm rounded-sm border transition-colors ${
                         item.type === t
-                          ? 'border-[#7B2D8E] bg-[#7B2D8E]/15 text-white'
+                          ? 'border-[#7B2D8E] bg-[#7B2D8E]/15 text-white font-medium'
                           : 'border-white/10 text-[#666] hover:border-white/20 hover:text-white'
                       }`}
                     >
@@ -245,28 +278,51 @@ function ItemCard({
               {/* URL or YouTube ID */}
               {item.type === 'image' ? (
                 <div>
-                  <label className="block text-[#666] text-xs uppercase tracking-widest mb-2">URL da Imagem</label>
+                  <label className="block text-[#666] text-xs uppercase tracking-widest mb-2">Link da Imagem (Google Drive, Imgur, etc.)</label>
                   <input
                     type="url"
                     value={item.src ?? ''}
-                    onChange={(e) => onUpdate({ ...item, src: e.target.value })}
-                    placeholder="https://exemplo.com/imagem.jpg"
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      const converted = normalizeImageUrl(raw);
+                      onUpdate({ ...item, src: converted });
+                    }}
+                    placeholder="https://drive.google.com/file/d/... ou https://..."
                     className="w-full px-3 py-2 bg-[#111] border border-white/[0.07] rounded-sm text-white text-sm placeholder-[#444] focus:outline-none focus:border-[#7B2D8E] transition-colors"
                   />
-                  <p className="text-[#444] text-xs mt-1">Pode usar Google Drive, Imgur, Cloudinary ou qualquer CDN público.</p>
+                  {isDriveLink ? (
+                    <p className="text-emerald-400 text-xs mt-1.5 flex items-center gap-1.5">
+                      <CheckCircle size={13} />
+                      Link do Google Drive pronto! Certifique-se de que no Google Drive o arquivo está partilhado como <strong>"Qualquer pessoa com o link pode ver"</strong>.
+                    </p>
+                  ) : (
+                    <p className="text-[#555] text-xs mt-1.5">
+                      Pode colar diretamente o link de partilha do Google Drive, Imgur, Cloudinary ou o caminho de uma imagem existente.
+                    </p>
+                  )}
                 </div>
               ) : (
                 <div>
-                  <label className="block text-[#666] text-xs uppercase tracking-widest mb-2">ID do YouTube</label>
+                  <label className="block text-[#666] text-xs uppercase tracking-widest mb-2">Link ou ID do YouTube</label>
                   <input
                     type="text"
                     value={item.videoId ?? ''}
-                    onChange={(e) => onUpdate({ ...item, videoId: e.target.value.trim() })}
-                    placeholder="ex: dQw4w9WgXcQ"
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      const cleanId = extractYouTubeId(raw);
+                      onUpdate({ ...item, videoId: cleanId });
+                    }}
+                    placeholder="ex: https://www.youtube.com/watch?v=dQw4w9WgXcQ ou dQw4w9WgXcQ"
                     className="w-full px-3 py-2 bg-[#111] border border-white/[0.07] rounded-sm text-white text-sm placeholder-[#444] focus:outline-none focus:border-[#7B2D8E] transition-colors"
                   />
-                  <p className="text-[#444] text-xs mt-1">
-                    O ID encontra-se no link: youtube.com/watch?v=<span className="text-[#7B2D8E]">ID_AQUI</span>
+                  {cleanVideoId && (
+                    <p className="text-emerald-400 text-xs mt-1.5 flex items-center gap-1.5">
+                      <CheckCircle size={13} />
+                      Vídeo pronto: ID extraído com sucesso ({cleanVideoId})
+                    </p>
+                  )}
+                  <p className="text-[#555] text-xs mt-1.5">
+                    Pode colar o link completo do vídeo (inclusive Shorts ou links partilhados do telemóvel). O ID é extraído automaticamente.
                   </p>
                 </div>
               )}
@@ -287,12 +343,14 @@ function CategorySection({
   onUpdate,
   onDelete,
   onAdd,
+  onMove,
 }: {
   category: Category;
   items: PortfolioItem[];
   onUpdate: (id: number, updated: PortfolioItem) => void;
   onDelete: (id: number) => void;
   onAdd: (type: ItemType) => void;
+  onMove: (id: number, direction: 'up' | 'down') => void;
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const labels = CATEGORY_LABELS[category];
@@ -305,10 +363,10 @@ function CategorySection({
         className="w-full flex items-center justify-between p-5 hover:bg-white/[0.02] transition-colors"
       >
         <div className="flex items-center gap-3">
-          <div className="w-2 h-2 rounded-full bg-[#7B2D8E]" />
+          <div className="w-2.5 h-2.5 rounded-full bg-[#7B2D8E]" />
           <div className="text-left">
             <p className="text-white font-semibold">{labels.pt}</p>
-            <p className="text-[#555] text-xs">{labels.en} · {items.length} item{items.length !== 1 ? 's' : ''}</p>
+            <p className="text-[#555] text-xs">{labels.en} · {items.length} item{items.length !== 1 ? 's' : ''} (Os 2 primeiros aparecem no separador "Todos")</p>
           </div>
         </div>
         {collapsed ? <ChevronDown size={18} className="text-[#555]" /> : <ChevronUp size={18} className="text-[#555]" />}
@@ -320,30 +378,34 @@ function CategorySection({
             <p className="text-[#555] text-sm text-center py-4">Sem itens nesta categoria</p>
           )}
 
-          {items.map((item) => (
+          {items.map((item, idx) => (
             <ItemCard
               key={item.id}
               item={item}
               onUpdate={(updated) => onUpdate(item.id, updated)}
               onDelete={() => onDelete(item.id)}
+              onMoveUp={() => onMove(item.id, 'up')}
+              onMoveDown={() => onMove(item.id, 'down')}
+              isFirst={idx === 0}
+              isLast={idx === items.length - 1}
             />
           ))}
 
           {/* Add buttons */}
-          <div className="flex gap-2 pt-1">
+          <div className="flex gap-2 pt-2">
             <button
               onClick={() => onAdd('image')}
-              className="flex-1 flex items-center justify-center gap-2 py-2.5 border border-dashed border-white/10 text-[#555] hover:border-[#7B2D8E]/50 hover:text-[#7B2D8E] transition-colors rounded-sm text-sm"
+              className="flex-1 flex items-center justify-center gap-2 py-2.5 border border-dashed border-white/10 text-[#888] hover:border-[#7B2D8E]/50 hover:text-white transition-colors rounded-sm text-sm"
             >
               <Plus size={14} />
-              Imagem
+              Adicionar Imagem
             </button>
             <button
               onClick={() => onAdd('video')}
-              className="flex-1 flex items-center justify-center gap-2 py-2.5 border border-dashed border-white/10 text-[#555] hover:border-[#7B2D8E]/50 hover:text-[#7B2D8E] transition-colors rounded-sm text-sm"
+              className="flex-1 flex items-center justify-center gap-2 py-2.5 border border-dashed border-white/10 text-[#888] hover:border-[#7B2D8E]/50 hover:text-white transition-colors rounded-sm text-sm"
             >
               <Plus size={14} />
-              Vídeo YouTube
+              Adicionar Vídeo YouTube
             </button>
           </div>
         </div>
@@ -364,33 +426,18 @@ function AdminDashboard({ token, onLogout }: { token: string; onLogout: () => vo
   const [showCodeModal, setShowCodeModal] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
 
-  // Load portfolio on mount
+  // Load portfolio on mount directly from Redis via API (no localStorage)
   useEffect(() => {
-    try {
-      const cached = localStorage.getItem('kutecula_portfolio_cache');
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setItems(parsed);
-          setLoading(false);
-        }
-      }
-    } catch {}
-
-    fetch('/api/admin/portfolio')
+    fetch(`/api/portfolio?t=${Date.now()}`, { cache: 'no-store' })
       .then((r) => r.json())
-      .then((data: { items: PortfolioItem[]; source?: string }) => {
-        const cached = localStorage.getItem('kutecula_portfolio_cache');
-        if (data.source === 'default' && cached) {
-          setLoading(false);
-          return;
-        }
-        if (data.items && Array.isArray(data.items) && data.items.length > 0) {
+      .then((data: { items?: PortfolioItem[]; source?: string }) => {
+        if (data && Array.isArray(data.items) && data.items.length > 0) {
           setItems(data.items);
         }
         setLoading(false);
       })
       .catch(() => {
+        setLoadError('Erro ao carregar dados do servidor.');
         setLoading(false);
       });
   }, []);
@@ -407,6 +454,31 @@ function AdminDashboard({ token, onLogout }: { token: string; onLogout: () => vo
     setSaveErrorMessage('');
   };
 
+  const handleMove = (id: number, direction: 'up' | 'down') => {
+    setItems((prev) => {
+      const itemToMove = prev.find((i) => i.id === id);
+      if (!itemToMove) return prev;
+
+      const cat = itemToMove.category;
+      const catIndices = prev.map((it, idx) => (it.category === cat ? idx : -1)).filter((idx) => idx !== -1);
+      const currentPosInCat = catIndices.findIndex((idx) => prev[idx].id === id);
+
+      const targetPosInCat = direction === 'up' ? currentPosInCat - 1 : currentPosInCat + 1;
+      if (targetPosInCat < 0 || targetPosInCat >= catIndices.length) return prev;
+
+      const globalIdxA = catIndices[currentPosInCat];
+      const globalIdxB = catIndices[targetPosInCat];
+
+      const newItems = [...prev];
+      const temp = newItems[globalIdxA];
+      newItems[globalIdxA] = newItems[globalIdxB];
+      newItems[globalIdxB] = temp;
+
+      return newItems;
+    });
+    setSaveStatus('idle');
+  };
+
   const handleAdd = (category: Category, type: ItemType) => {
     const newItem: PortfolioItem = {
       id: nextId(items),
@@ -420,30 +492,44 @@ function AdminDashboard({ token, onLogout }: { token: string; onLogout: () => vo
     setSaveErrorMessage('');
   };
 
+  // POST /api/portfolio directly to Redis (No localStorage)
   const handleSave = async () => {
     setSaveStatus('saving');
     setSaveErrorMessage('');
 
-    // Save to browser localStorage cache immediately
-    try {
-      localStorage.setItem('kutecula_portfolio_cache', JSON.stringify(items));
-    } catch {}
+    // Pre-sanitize items before saving to Redis
+    const sanitizedItems = items.map((it) => ({
+      ...it,
+      src: it.type === 'image' ? normalizeImageUrl(it.src) : undefined,
+      videoId: it.type === 'video' ? extractYouTubeId(it.videoId) : undefined,
+    }));
+    setItems(sanitizedItems);
 
     try {
-      await fetch('/api/admin/portfolio', {
+      const res = await fetch('/api/portfolio', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ items }),
+        body: JSON.stringify({ items: sanitizedItems }),
       });
-    } catch (err: any) {
-      console.warn('Background sync warning:', err);
-    }
 
-    setSaveStatus('saved');
-    setTimeout(() => setSaveStatus('idle'), 3000);
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok || data.success !== true) {
+        setSaveStatus('error');
+        setSaveErrorMessage(data.error || 'Erro ao gravar os dados no Redis.');
+        return;
+      }
+
+      setSaveStatus('saved');
+      setTimeout(() => setSaveStatus('idle'), 3500);
+    } catch (err: any) {
+      console.error('Error saving to Redis:', err);
+      setSaveStatus('error');
+      setSaveErrorMessage(`Falha na ligação com o servidor: ${err?.message || String(err)}`);
+    }
   };
 
   const itemsByCategory = CATEGORIES.reduce<Record<Category, PortfolioItem[]>>((acc, cat) => {
@@ -466,10 +552,19 @@ function AdminDashboard({ token, onLogout }: { token: string; onLogout: () => vo
         <div className="max-w-4xl mx-auto px-6 h-16 flex items-center justify-between">
           <div>
             <h1 className="text-white font-bold tracking-[0.15em]">KUTECULA</h1>
-            <p className="text-[#7B2D8E] text-[10px] tracking-[0.4em] uppercase">Admin · Portfólio</p>
+            <p className="text-[#7B2D8E] text-[10px] tracking-[0.4em] uppercase">Admin · Portfólio (Redis)</p>
           </div>
 
           <div className="flex items-center gap-3">
+            <button
+              onClick={() => setShowCodeModal(true)}
+              className="px-3 py-2 bg-white/5 hover:bg-white/10 text-white/80 hover:text-white rounded-sm text-xs font-medium transition-colors flex items-center gap-1.5 border border-white/10"
+              title="Ver e copiar código para o projeto"
+            >
+              <Code2 size={14} />
+              <span className="hidden sm:inline">Exportar Código</span>
+            </button>
+
             <a
               href="/"
               className="text-[#888] hover:text-white text-sm transition-colors flex items-center gap-1"
@@ -478,15 +573,15 @@ function AdminDashboard({ token, onLogout }: { token: string; onLogout: () => vo
               Ver site →
             </a>
 
-            {/* Save button */}
+            {/* Save button (Redis) */}
             <button
               onClick={handleSave}
               disabled={saveStatus === 'saving' || saveStatus === 'saved'}
-              className={`flex items-center gap-2 px-6 py-2.5 rounded-sm text-sm font-semibold transition-all ${
+              className={`flex items-center gap-2 px-5 py-2.5 rounded-sm text-sm font-semibold transition-all ${
                 saveStatus === 'saved'
                   ? 'bg-green-600 text-white border border-green-500 shadow-lg shadow-green-900/30'
                   : saveStatus === 'error'
-                  ? 'bg-red-600 text-white border border-red-500'
+                  ? 'bg-red-600 text-white border border-red-500 shadow-lg shadow-red-900/30'
                   : 'bg-[#7B2D8E] text-white hover:bg-[#8f3aa3] shadow-lg shadow-[#7B2D8E]/30'
               } disabled:cursor-not-allowed`}
             >
@@ -494,7 +589,13 @@ function AdminDashboard({ token, onLogout }: { token: string; onLogout: () => vo
               {saveStatus === 'saved' && <CheckCircle size={16} />}
               {saveStatus === 'error' && <AlertCircle size={16} />}
               {saveStatus === 'idle' && <Save size={16} />}
-              {saveStatus === 'saving' ? 'A guardar...' : saveStatus === 'saved' ? 'Publicado no Site!' : saveStatus === 'error' ? 'Erro ao Publicar' : 'Guardar no Site'}
+              {saveStatus === 'saving'
+                ? 'A gravar no Redis...'
+                : saveStatus === 'saved'
+                ? 'Gravado no Redis!'
+                : saveStatus === 'error'
+                ? 'Erro ao Gravar no Redis'
+                : 'Guardar no Redis'}
             </button>
 
             <button
@@ -510,16 +611,30 @@ function AdminDashboard({ token, onLogout }: { token: string; onLogout: () => vo
 
       {/* Content */}
       <div className="max-w-4xl mx-auto px-6 py-10">
-        {/* Save Error Alert */}
+        {/* Redis Error Alert */}
         {saveStatus === 'error' && saveErrorMessage && (
           <div className="bg-red-500/10 border border-red-500/30 rounded-sm p-4 mb-6 text-sm text-red-300 flex items-start gap-3">
-            <AlertCircle size={18} className="text-red-400 flex-shrink-0 mt-0.5" />
-            <div>
-              <p className="font-semibold text-red-200 mb-0.5">Base de dados não conectada na Vercel</p>
-              <p className="text-xs text-red-300/90 mt-1">{saveErrorMessage}</p>
-              <p className="text-xs text-red-400/80 mt-2">
-                Para ativar o salvamento automático sem programar: aceda à Vercel → projeto Kutecula → Storage → Crie a base de dados gratuita <strong>KV (Redis)</strong>.
-              </p>
+            <AlertCircle size={19} className="text-red-400 flex-shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <p className="font-semibold text-red-200 mb-1">Erro ao gravar na base de dados Redis</p>
+              <p className="text-xs text-red-300/90 leading-relaxed mb-3">{saveErrorMessage}</p>
+              <div className="flex flex-wrap items-center gap-3">
+                <a
+                  href="https://vercel.com/dashboard"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="px-3 py-1.5 bg-red-500/20 text-red-200 border border-red-500/40 font-medium text-xs rounded-sm hover:bg-red-500/30 transition-colors"
+                >
+                  Conectar KV / Redis na Vercel (Storage → Create Database) →
+                </a>
+                <button
+                  onClick={() => setShowCodeModal(true)}
+                  className="px-3 py-1.5 bg-white/10 text-white font-medium text-xs rounded-sm hover:bg-white/20 transition-colors flex items-center gap-1.5"
+                >
+                  <Code2 size={13} />
+                  Copiar Código Atualizado para o Projeto
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -553,6 +668,7 @@ function AdminDashboard({ token, onLogout }: { token: string; onLogout: () => vo
                 onUpdate={handleUpdate}
                 onDelete={handleDelete}
                 onAdd={(type) => handleAdd(cat, type)}
+                onMove={handleMove}
               />
             ))}
           </div>

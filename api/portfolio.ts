@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-// Default portfolio items — used as fallback
+// Default portfolio items — used only when Redis is empty or newly created
 const DEFAULT_PORTFOLIO = [
   // Casamentos
   { id: 1,  type: 'image', src: '/portfolio-wedding-1.jpg',     label: { pt: 'Casamentos',  en: 'Weddings'    }, category: 'casamentos' },
@@ -45,7 +45,7 @@ function verifyAdminToken(token: string | undefined): boolean {
   }
 }
 
-function getKvCredentials() {
+function getRedisCredentials() {
   // 1. Standard known prefixes (KV, STORAGE, REDIS, UPSTASH)
   let url =
     process.env.KV_REST_API_URL ||
@@ -101,8 +101,8 @@ function getKvCredentials() {
   return { url, token };
 }
 
-async function getPortfolioFromKV() {
-  const { url, token } = getKvCredentials();
+async function getPortfolioFromRedis(): Promise<any[] | null> {
+  const { url, token } = getRedisCredentials();
   if (!url || !token) return null;
 
   const baseUrl = url.replace(/\/$/, '');
@@ -124,19 +124,19 @@ async function getPortfolioFromKV() {
       }
     }
 
-    // 2. Pipeline GET
-    const pipeRes = await fetch(`${baseUrl}/pipeline`, {
+    // 2. Upstash Command endpoint
+    const cmdRes = await fetch(`${baseUrl}`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify([['GET', 'kutecula_portfolio']]),
+      body: JSON.stringify(['GET', 'kutecula_portfolio']),
     });
-    if (pipeRes.ok) {
-      const pipeData = await pipeRes.json() as Array<{ result: any }>;
-      if (Array.isArray(pipeData) && pipeData[0] && pipeData[0].result) {
-        let parsed = typeof pipeData[0].result === 'string' ? JSON.parse(pipeData[0].result) : pipeData[0].result;
+    if (cmdRes.ok) {
+      const cmdData = await cmdRes.json() as { result: any };
+      if (cmdData && cmdData.result !== null && cmdData.result !== undefined) {
+        let parsed = typeof cmdData.result === 'string' ? JSON.parse(cmdData.result) : cmdData.result;
         if (typeof parsed === 'string') parsed = JSON.parse(parsed);
         if (Array.isArray(parsed)) return parsed;
       }
@@ -144,21 +144,18 @@ async function getPortfolioFromKV() {
 
     return null;
   } catch (err) {
-    console.error('Error reading from KV:', err);
+    console.error('Error reading from Redis:', err);
     return null;
   }
 }
 
-async function savePortfolioToKV(portfolio: unknown): Promise<{ success: boolean; error?: string }> {
-  const { url, token } = getKvCredentials();
+async function savePortfolioToRedis(portfolio: unknown): Promise<{ success: boolean; error?: string }> {
+  const { url, token } = getRedisCredentials();
 
   if (!url || !token) {
-    const envKeys = Object.keys(process.env).filter(
-      (k) => !k.includes('PASS') && !k.includes('SECRET') && !k.includes('KEY') && !k.includes('TOKEN')
-    );
     return {
       success: false,
-      error: `Variáveis do Vercel KV não detetadas no servidor (Variáveis presentes: [${envKeys.join(', ')}]). Na Vercel, aceda a "Deployments", clique nos "..." do deploy mais recente e faça "Redeploy" para carregar o KV.`,
+      error: 'Variáveis de conexão ao Redis (KV_REST_API_URL / KV_REST_API_TOKEN ou UPSTASH_REDIS_REST_URL) não encontradas no servidor Vercel. Crie a base de dados no painel da Vercel (Storage → KV / Redis).',
     };
   }
 
@@ -166,7 +163,20 @@ async function savePortfolioToKV(portfolio: unknown): Promise<{ success: boolean
   const payloadString = JSON.stringify(portfolio);
 
   try {
-    // 1. Upstash Pipeline endpoint
+    // 1. Upstash Command endpoint: POST ["SET", "kutecula_portfolio", payload]
+    const cmdRes = await fetch(`${baseUrl}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(['SET', 'kutecula_portfolio', payloadString]),
+    });
+    if (cmdRes.ok) {
+      return { success: true };
+    }
+
+    // 2. Upstash Pipeline endpoint
     const pipelineRes = await fetch(`${baseUrl}/pipeline`, {
       method: 'POST',
       headers: {
@@ -175,12 +185,11 @@ async function savePortfolioToKV(portfolio: unknown): Promise<{ success: boolean
       },
       body: JSON.stringify([['SET', 'kutecula_portfolio', payloadString]]),
     });
-
     if (pipelineRes.ok) {
       return { success: true };
     }
 
-    // 2. Direct SET endpoint
+    // 3. Direct SET endpoint
     const setRes = await fetch(`${baseUrl}/set/kutecula_portfolio`, {
       method: 'POST',
       headers: {
@@ -189,37 +198,43 @@ async function savePortfolioToKV(portfolio: unknown): Promise<{ success: boolean
       },
       body: JSON.stringify(payloadString),
     });
-
     if (setRes.ok) {
       return { success: true };
     }
 
-    const errText = await setRes.text();
+    const errText = await cmdRes.text();
     return {
       success: false,
-      error: `Vercel KV recusou o salvamento (HTTP ${setRes.status}): ${errText || setRes.statusText}`,
+      error: `Redis recusou a gravação (HTTP ${cmdRes.status}): ${errText || cmdRes.statusText}`,
     };
   } catch (err: any) {
     return {
       success: false,
-      error: `Erro ao comunicar com Vercel KV: ${err?.message || String(err)}`,
+      error: `Erro ao comunicar com Redis: ${err?.message || String(err)}`,
     };
   }
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
-    if (req.method === 'OPTIONS') return res.status(200).end();
+    if (req.method === 'OPTIONS') {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      return res.status(200).end();
+    }
 
+    // GET /api/portfolio — Chamado pelo Site público e pelo Admin para ler do Redis
     if (req.method === 'GET') {
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-      const portfolio = await getPortfolioFromKV();
+      const portfolio = await getPortfolioFromRedis();
       return res.status(200).json({
         items: portfolio ?? DEFAULT_PORTFOLIO,
-        source: portfolio ? 'kv' : 'default',
+        source: portfolio ? 'redis' : 'default',
       });
     }
 
+    // POST /api/portfolio — Chamado pelo Admin para gravar no Redis
     if (req.method === 'POST') {
       const authHeader = req.headers.authorization || '';
       const token = authHeader.replace(/^Bearer\s+/i, '').trim();
@@ -233,10 +248,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
       const { items } = (body || {}) as { items?: any[] };
       if (!items || !Array.isArray(items)) {
-        return res.status(400).json({ error: 'items deve ser um array' });
+        return res.status(400).json({ success: false, error: 'O campo items deve ser um array.' });
       }
 
-      // Sanitize items: clean Google Drive links and YouTube video IDs
+      // Sanitize Google Drive links e YouTube links antes de gravar no Redis
       const sanitized = items.map((it: any) => {
         if (!it || typeof it !== 'object') return it;
         const copy = { ...it };
@@ -254,7 +269,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return copy;
       });
 
-      const result = await savePortfolioToKV(sanitized);
+      const result = await savePortfolioToRedis(sanitized);
 
       if (!result.success) {
         return res.status(503).json({
@@ -271,8 +286,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     return res.status(405).json({ error: 'Método não permitido' });
-  } catch (err) {
-    console.error('Unexpected error in admin portfolio API:', err);
-    return res.status(500).json({ error: 'Erro interno no servidor.' });
+  } catch (err: any) {
+    console.error('Unexpected error in portfolio API:', err);
+    return res.status(500).json({ success: false, error: 'Erro interno no servidor.' });
   }
 }

@@ -4,6 +4,8 @@ import { Play } from 'lucide-react';
 import { useLang } from '@/context/LanguageContext';
 import { GalleryModal, type GalleryItem } from '@/components/GalleryModal';
 
+import { extractYouTubeId, normalizeImageUrl, getYouTubeThumbnail } from '@/lib/utils';
+
 type Category = 'todos' | 'casamentos' | 'eventos' | 'corporativo' | 'estudio' | 'audiovisual';
 
 // Static fallback — used when the API is unavailable or KV is not configured
@@ -50,12 +52,8 @@ const categoryMap: Record<Category, string> = {
   audiovisual: 'audiovisual',
 };
 
-// Preview subset for "todos" (first item from each category)
+// Preview subset for "todos" (up to 2 items from each category in defined order)
 const previewCategoryOrder = ['casamentos', 'eventos', 'audiovisual', 'corporativo', 'estudio'];
-
-function getVideoThumb(videoId: string) {
-  return `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
-}
 
 export function Portfolio() {
   const { lang, t } = useLang();
@@ -67,56 +65,38 @@ export function Portfolio() {
   const ref = useRef(null);
   const isInView = useInView(ref, { once: true, margin: '-100px' });
 
-  // Load portfolio from API (with fallback to local storage & static)
+  // Load portfolio from Redis via API (Public site reads directly from Redis)
   useEffect(() => {
-    try {
-      const cached = localStorage.getItem('kutecula_portfolio_cache');
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setPortfolioItems(parsed);
-        }
-      }
-    } catch {}
-
-    fetch('/api/admin/portfolio')
+    fetch(`/api/portfolio?t=${Date.now()}`, { cache: 'no-store' })
       .then((r) => r.json())
-      .then((data: { items: typeof STATIC_PORTFOLIO; source?: string }) => {
-        if (data.items && Array.isArray(data.items) && data.items.length > 0) {
-          // If server returned default fallback, only use it if localStorage is empty
-          const cached = localStorage.getItem('kutecula_portfolio_cache');
-          if (data.source === 'default' && cached) {
-            try {
-              const parsed = JSON.parse(cached);
-              if (Array.isArray(parsed) && parsed.length > 0) {
-                return; // Keep user's custom edits from cache!
-              }
-            } catch {}
-          }
+      .then((data: { items?: typeof STATIC_PORTFOLIO; source?: string }) => {
+        if (data && Array.isArray(data.items) && data.items.length > 0) {
           setPortfolioItems(data.items);
-          try {
-            localStorage.setItem('kutecula_portfolio_cache', JSON.stringify(data.items));
-          } catch {}
         }
       })
-      .catch(() => {
-        // Silently fall back to static or cached data
+      .catch((err) => {
+        console.warn('Could not load portfolio from Redis, using fallback:', err);
       });
   }, []);
 
   const categoryKeys = Object.keys(categoryMap) as Category[];
 
-  // Display items: when 'todos', show all items with newest items first!
+  // Original curated preview organization for 'todos': up to 2 items from each category, max 9 items!
+  const previewItems = previewCategoryOrder.flatMap((cat) =>
+    portfolioItems.filter((i) => i.category === cat).slice(0, 2)
+  ).slice(0, 9);
+
+  // Display items: when 'todos', show previewItems; otherwise show all items in the selected category
   const displayedItems =
     activeCategory === 'todos'
-      ? [...portfolioItems].reverse()
-      : [...portfolioItems].filter((i) => i.category === activeCategory).reverse();
+      ? previewItems
+      : portfolioItems.filter((i) => i.category === activeCategory);
 
   const openGallery = (item: GalleryItem & { category: string }, cat: Category) => {
     const catItems =
       cat === 'todos'
-        ? displayedItems
-        : [...portfolioItems].filter((i) => i.category === cat).reverse();
+        ? previewItems
+        : portfolioItems.filter((i) => i.category === cat);
     const idx = catItems.findIndex((i) => i.id === item.id);
     setGalleryItems(catItems);
     setGalleryIndex(idx >= 0 ? idx : 0);
@@ -173,7 +153,7 @@ export function Portfolio() {
           <motion.div layout className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             <AnimatePresence mode="popLayout">
               {displayedItems.map((item, index) => {
-                const bgSrc = item.type === 'image' ? item.src! : getVideoThumb(item.videoId!);
+                const bgSrc = item.type === 'image' ? normalizeImageUrl(item.src) : getYouTubeThumbnail(item.videoId);
 
                 return (
                   <motion.div
